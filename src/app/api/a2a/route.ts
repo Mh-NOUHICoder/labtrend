@@ -1,6 +1,19 @@
 import { NextResponse } from "next/server";
 import { fromFHIR } from "../../../lib/fhir";
 
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+};
+
+export async function OPTIONS() {
+  return new NextResponse(null, {
+    status: 204,
+    headers: CORS_HEADERS,
+  });
+}
+
 export async function POST(req: Request) {
   try {
     const body = await req.json();
@@ -18,7 +31,7 @@ export async function POST(req: Request) {
         clinical_summary: "Error: Missing 'intent' in request.",
         key_factors: ["Invalid A2A Request Parameters"],
         recommended_actions: ["Provide a valid intent (e.g., 'analyze_renal_risk')"]
-      }, { status: 400 });
+      }, { status: 400, headers: CORS_HEADERS });
     }
 
     if (intent !== "analyze_renal_risk" && intent !== "get_trend") {
@@ -29,7 +42,7 @@ export async function POST(req: Request) {
         clinical_summary: `Error: Unsupported intent '${intent}'.`,
         key_factors: ["Invalid A2A Intent Signature"],
         recommended_actions: ["Use 'analyze_renal_risk' or 'get_trend'"]
-      }, { status: 400 });
+      }, { status: 400, headers: CORS_HEADERS });
     }
 
     // Process and normalize input data
@@ -77,7 +90,7 @@ export async function POST(req: Request) {
       clinical_summary: aiResult.clinical_summary || "No summary provided.",
       key_factors: aiResult.key_factors || [],
       recommended_actions: aiResult.recommended_actions || []
-    });
+    }, { headers: CORS_HEADERS });
 
   } catch (error: any) {
     console.error(`[A2A Error]`, error);
@@ -88,6 +101,6 @@ export async function POST(req: Request) {
       clinical_summary: "A2A Server Parsing Error.",
       key_factors: ["Internal Try-Catch Failure"],
       recommended_actions: [error.message]
-    }, { status: 500 });
+    }, { status: 500, headers: CORS_HEADERS });
   }
 }
