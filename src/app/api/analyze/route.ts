@@ -1,14 +1,7 @@
 import { NextResponse } from "next/server";
 
-export async function POST(req: Request) {
-  try {
-    const { lab_data } = await req.json();
-
-    if (!lab_data) {
-      return NextResponse.json({ error: "lab_data is required" }, { status: 400 });
-    }
-
-    const SYSTEM_PROMPT = `
+export async function runCoreAnalyzer(lab_data: any) {
+  const SYSTEM_PROMPT = `
 You are LabTrend AI, a clinical-grade Renal Risk Intelligence Agent designed for interoperable healthcare systems.
 
 ## Your Responsibilities
@@ -45,100 +38,113 @@ You must ALWAYS return structured output exactly matching this JSON format:
 }
 
 Ensure your response is valid JSON. ONLY output the JSON, no markdown blocks.
-    `.trim();
+  `.trim();
 
-    // Define available providers with their respective fetching logic
-    const attemptGroq = async () => {
-      const apiKey = process.env.GROQ_API_KEY;
-      if (!apiKey || apiKey === "") throw new Error("GROQ key missing");
-      const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-        body: JSON.stringify({
-          model: "llama-3.3-70b-versatile",
-          response_format: { type: "json_object" },
-          messages: [
-            { role: "system", content: SYSTEM_PROMPT },
-            { role: "user", content: JSON.stringify(lab_data) },
-          ],
-        }),
-      });
-      if (!res.ok) throw new Error(`Groq Error: ${await res.text()}`);
-      const data = await res.json();
-      return JSON.parse(data.choices[0].message.content);
-    };
+  // Define available providers with their respective fetching logic
+  const attemptGroq = async () => {
+    const apiKey = process.env.GROQ_API_KEY;
+    if (!apiKey || apiKey === "") throw new Error("GROQ key missing");
+    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({
+        model: "llama-3.3-70b-versatile",
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: SYSTEM_PROMPT },
+          { role: "user", content: JSON.stringify(lab_data) },
+        ],
+      }),
+    });
+    if (!res.ok) throw new Error(`Groq Error: ${await res.text()}`);
+    const data = await res.json();
+    return JSON.parse(data.choices[0].message.content);
+  };
 
-    const attemptGemini = async () => {
-      const apiKey = process.env.GEMENI_API_KEY || process.env.GEMINI_API_KEY;
-      if (!apiKey || apiKey === "") throw new Error("GEMINI key missing");
-      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          system_instruction: { parts: { text: SYSTEM_PROMPT } },
-          contents: [{ role: "user", parts: [{ text: JSON.stringify(lab_data) }] }],
-          generationConfig: { responseMimeType: "application/json" }
-        })
-      });
-      if (!res.ok) throw new Error(`Gemini Error: ${await res.text()}`);
-      const data = await res.json();
-      return JSON.parse(data.candidates[0].content.parts[0].text);
-    };
+  const attemptGemini = async () => {
+    const apiKey = process.env.GEMENI_API_KEY || process.env.GEMINI_API_KEY;
+    if (!apiKey || apiKey === "") throw new Error("GEMINI key missing");
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        system_instruction: { parts: { text: SYSTEM_PROMPT } },
+        contents: [{ role: "user", parts: [{ text: JSON.stringify(lab_data) }] }],
+        generationConfig: { responseMimeType: "application/json" }
+      })
+    });
+    if (!res.ok) throw new Error(`Gemini Error: ${await res.text()}`);
+    const data = await res.json();
+    return JSON.parse(data.candidates[0].content.parts[0].text);
+  };
 
-    const attemptOpenAI = async () => {
-      const apiKey = process.env.OPENAI_API_KEY;
-      if (!apiKey || apiKey === "" || apiKey === "your_openai_api_key_here") throw new Error("OPENAI key missing");
-      const res = await fetch("https://api.openai.com/v1/chat/completions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-        body: JSON.stringify({
-          model: "gpt-4o-mini",
-          response_format: { type: "json_object" },
-          messages: [
-            { role: "system", content: SYSTEM_PROMPT },
-            { role: "user", content: JSON.stringify(lab_data) },
-          ],
-        }),
-      });
-      if (!res.ok) throw new Error(`OpenAI Error: ${await res.text()}`);
-      const data = await res.json();
-      return JSON.parse(data.choices[0].message.content);
-    };
+  const attemptOpenAI = async () => {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey || apiKey === "" || apiKey === "your_openai_api_key_here") throw new Error("OPENAI key missing");
+    const res = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: SYSTEM_PROMPT },
+          { role: "user", content: JSON.stringify(lab_data) },
+        ],
+      }),
+    });
+    if (!res.ok) throw new Error(`OpenAI Error: ${await res.text()}`);
+    const data = await res.json();
+    return JSON.parse(data.choices[0].message.content);
+  };
 
-    // Fallback Logic: Try Groq -> Gemini -> OpenAI
-    let parsedResult = null;
-    let errors = [];
+  // Fallback Logic: Try Groq -> Gemini -> OpenAI
+  let parsedResult = null;
+  let errors = [];
 
-    // Try Groq
+  // Try Groq
+  try {
+    parsedResult = await attemptGroq();
+    console.log("✅ Analysis generated by: GROQ");
+  } catch (e: any) {
+    console.log("❌ GROQ attempt failed:", e.message);
+    errors.push(e.message);
+  }
+
+  // Try Gemini
+  if (!parsedResult) {
     try {
-      parsedResult = await attemptGroq();
-      console.log("✅ Analysis generated by: GROQ");
+      parsedResult = await attemptGemini();
+      console.log("✅ Analysis generated by: GEMINI");
     } catch (e: any) {
-      console.log("❌ GROQ attempt failed:", e.message);
+      console.log("❌ GEMINI attempt failed:", e.message);
       errors.push(e.message);
     }
+  }
 
-    // Try Gemini
-    if (!parsedResult) {
-      try {
-        parsedResult = await attemptGemini();
-        console.log("✅ Analysis generated by: GEMINI");
-      } catch (e: any) {
-        console.log("❌ GEMINI attempt failed:", e.message);
-        errors.push(e.message);
-      }
+  // Try OpenAI
+  if (!parsedResult) {
+    try {
+      parsedResult = await attemptOpenAI();
+      console.log("✅ Analysis generated by: OPENAI");
+    } catch (e: any) {
+      console.log("❌ OPENAI attempt failed:", e.message);
+      errors.push(e.message);
+    }
+  }
+
+  return parsedResult;
+}
+
+export async function POST(req: Request) {
+  try {
+    const { lab_data } = await req.json();
+
+    if (!lab_data) {
+      return NextResponse.json({ error: "lab_data is required" }, { status: 400 });
     }
 
-    // Try OpenAI
-    if (!parsedResult) {
-      try {
-        parsedResult = await attemptOpenAI();
-        console.log("✅ Analysis generated by: OPENAI");
-      } catch (e: any) {
-        console.log("❌ OPENAI attempt failed:", e.message);
-        errors.push(e.message);
-      }
-    }
+    let parsedResult = await runCoreAnalyzer(lab_data);
 
     // If all providers fail, trigger a clean realistic mock fallback (Critical for a stable live Demo!)
     if (!parsedResult) {
