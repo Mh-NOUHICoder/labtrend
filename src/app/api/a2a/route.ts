@@ -15,13 +15,13 @@ export async function OPTIONS() {
   });
 }
 
-// 🌐 1. MANIFEST ENDPOINT (Bare minimum for strict registries)
+// 🌐 1. MANIFEST ENDPOINT (Strict Whitelist Compliance)
 export async function GET() {
   return NextResponse.json({
     name: "LabTrendAgent",
     version: "1.0.0",
     type: "a2a-agent",
-    description: "Clinical lab analysis agent",
+    description: "Clinical lab analysis agent for early renal risk prediction.",
     entrypoint: "https://labtrend.vercel.app/api/a2a",
     capabilities: [
       "lab_analysis",
