@@ -15,6 +15,27 @@ export async function OPTIONS() {
   });
 }
 
+// 🌐 EXTERNAL AGENT HANDSHAKE COMPLIANCE (PromptOpinion requires this GET call)
+export async function GET(req: Request) {
+  return NextResponse.json({
+    name: "LabTrendAgent",
+    version: "1.0.0",
+    type: "a2a-agent",
+    status: "ok",
+    description: "Clinical Renal Risk Intelligence Agent analyzing FHIR Observations.",
+    capabilities: [
+      "FHIR validation",
+      "lab_analysis",
+      "risk_scoring",
+      "clinical_narrative"
+    ],
+    schema: {
+      input: "Array of FHIR Observation resources (eGFR, Creatinine, HbA1c).",
+      output: "Multi-Agent JSON response containing 'composed_response' and 'a2a_trace'."
+    }
+  }, { headers: CORS_HEADERS });
+}
+
 export async function POST(req: Request) {
   try {
     const body = await req.json();
