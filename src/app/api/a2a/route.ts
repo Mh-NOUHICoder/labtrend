@@ -30,6 +30,7 @@ export async function GET() {
     ],
     input_schema: {
       type: "object",
+      required: ["agent", "intent", "fhir_data"],
       properties: {
         agent: { type: "string" },
         intent: { type: "string" },
@@ -48,13 +49,27 @@ export async function GET() {
     },
     output_schema: {
       type: "object",
+      required: [
+        "agent",
+        "risk_level",
+        "confidence",
+        "clinical_summary",
+        "key_factors",
+        "recommended_actions"
+      ],
       properties: {
         agent: { type: "string" },
         risk_level: { type: "string" },
         confidence: { type: "number" },
         clinical_summary: { type: "string" },
-        key_factors: { type: "array" },
-        recommended_actions: { type: "array" }
+        key_factors: { 
+          type: "array",
+          items: { type: "string" }
+        },
+        recommended_actions: { 
+          type: "array",
+          items: { type: "string" }
+        }
       }
     },
     entrypoint: "/api/a2a"
