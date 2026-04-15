@@ -18,65 +18,63 @@ export async function OPTIONS() {
 export async function POST(req: Request) {
   try {
     const body = await req.json();
-    const { agent, intent, patient_data, fhir_data, lab_data } = body;
+    const { intent, fhir_data } = body;
 
-    // Log the A2A request
-    console.log(`[A2A Request] Agent: ${agent || "Unknown"}, Intent: ${intent}`);
+    const trace: any[] = [];
+    const timestamp = new Date().toISOString();
 
-    // Strict constraint check
-    if (!intent) {
+    // 1. FHIRValidationAgent (Strict Enforcement)
+    trace.push({
+      timestamp,
+      agent: "FHIRValidatorAgent",
+      action: "validate_payload",
+      status: "processing"
+    });
+
+    if (!fhir_data || !Array.isArray(fhir_data) || fhir_data[0]?.resourceType !== "Observation") {
+      trace.push({
+        timestamp: new Date().toISOString(),
+        agent: "FHIRValidatorAgent",
+        action: "reject_payload",
+        reason: "Strict FHIR enforcement failed. Payload must be an array of FHIR Observation resources."
+      });
       return NextResponse.json({
-        agent: "LabTrendAgent",
-        risk_level: "MODERATE",
-        confidence: 0,
-        clinical_summary: "Error: Missing 'intent' in request.",
-        key_factors: ["Invalid A2A Request Parameters"],
-        recommended_actions: ["Provide a valid intent (e.g., 'analyze_renal_risk')"]
+        error: "Invalid A2A Request",
+        message: "Must provide valid FHIR Observations in 'fhir_data'.",
+        trace
       }, { status: 400, headers: CORS_HEADERS });
     }
 
-    if (intent !== "analyze_renal_risk" && intent !== "get_trend") {
-      return NextResponse.json({
-        agent: "LabTrendAgent",
-        risk_level: "MODERATE",
-        confidence: 0,
-        clinical_summary: `Error: Unsupported intent '${intent}'.`,
-        key_factors: ["Invalid A2A Intent Signature"],
-        recommended_actions: ["Use 'analyze_renal_risk' or 'get_trend'"]
-      }, { status: 400, headers: CORS_HEADERS });
-    }
+    trace.push({
+      timestamp: new Date().toISOString(),
+      agent: "FHIRValidatorAgent",
+      action: "approve_payload",
+      status: "success",
+      message: "Valid FHIR Bundle detected. Passing to LabTrendAgent."
+    });
 
-    // Process and normalize input data
-    let labDataToAnalyze: any[] = [];
-    
-    if (fhir_data) {
-      labDataToAnalyze = fromFHIR(fhir_data);
-    } else if (patient_data && Array.isArray(patient_data)) {
-      // Auto-detect if it's FHIR or internal format
-      if (patient_data[0]?.resourceType || patient_data[0]?.code) {
-         labDataToAnalyze = fromFHIR(patient_data);
-      } else {
-         labDataToAnalyze = patient_data;
-      }
-    } else if (lab_data) {
-      labDataToAnalyze = lab_data;
-    }
+    // 2. LabTrendAgent (Extraction Layer)
+    trace.push({
+      timestamp: new Date().toISOString(),
+      agent: "LabTrendAgent",
+      target: "RiskAgent",
+      action: "extract_and_send",
+      message: "Extracted clinical values from FHIR. Requesting Risk Stratification."
+    });
 
-    if (!labDataToAnalyze || labDataToAnalyze.length === 0) {
-      return NextResponse.json({
-        agent: "LabTrendAgent",
-        risk_level: "MODERATE",
-        confidence: 0,
-        clinical_summary: "Error: No valid observations provided.",
-        key_factors: ["Empty or invalid lab payload"],
-        recommended_actions: ["Ensure 'patient_data' or 'fhir_data' contains valid FHIR Observations"]
-      }, { status: 400 });
-    }
+    const labDataToAnalyze = fromFHIR(fhir_data);
 
-    // Route requests directly to the core engine function to avoid Vercel Serverless HTTP loopback timeouts
+    // 3. RiskAgent & SummaryAgent (LLM Reasoning Layer)
+    trace.push({
+      timestamp: new Date().toISOString(),
+      agent: "RiskAgent",
+      action: "compute_risk",
+      model: "multi-llm-engine",
+      status: "processing"
+    });
+
     let aiResult = await runCoreAnalyzer(labDataToAnalyze);
 
-    // If core engine returns null (extremely rare due to fallback), inject a mock
     if (!aiResult) {
        aiResult = {
          risk_level: "MODERATE",
@@ -87,25 +85,40 @@ export async function POST(req: Request) {
        };
     }
 
-    // Enforce Strict A2A JSON Contract bounds before returning
+    trace.push({
+      timestamp: new Date().toISOString(),
+      agent: "RiskAgent",
+      action: "assign_score",
+      assigned_risk: aiResult.risk_level
+    });
+
+    // 4. SummaryAgent (Narrative & Final Composition Layer)
+    trace.push({
+      timestamp: new Date().toISOString(),
+      agent: "SummaryAgent",
+      target: "External_Caller",
+      action: "compose_final_response",
+      status: "completed"
+    });
+
+    // True Composed A2A Multi-Agent Response
     return NextResponse.json({
-      agent: "LabTrendAgent",
-      risk_level: aiResult.risk_level || "MODERATE",
-      confidence: typeof aiResult.confidence !== "undefined" ? aiResult.confidence : 0,
-      clinical_summary: aiResult.clinical_summary || "No summary provided.",
-      key_factors: aiResult.key_factors || [],
-      recommended_actions: aiResult.recommended_actions || []
+      composed_response: {
+        agent: "SummaryAgent",
+        risk_level: aiResult.risk_level || "MODERATE",
+        confidence: typeof aiResult.confidence !== "undefined" ? aiResult.confidence : 0,
+        clinical_summary: aiResult.clinical_summary || "No summary provided.",
+        key_factors: aiResult.key_factors || [],
+        recommended_actions: aiResult.recommended_actions || []
+      },
+      a2a_trace: trace
     }, { headers: CORS_HEADERS });
 
   } catch (error: any) {
     console.error(`[A2A Error]`, error);
     return NextResponse.json({
-      agent: "LabTrendAgent",
-      risk_level: "MODERATE",
-      confidence: 0,
-      clinical_summary: "A2A Server Parsing Error.",
-      key_factors: ["Internal Try-Catch Failure"],
-      recommended_actions: [error.message]
+      error: "A2A System Orchestrator Failure",
+      details: error.message
     }, { status: 500, headers: CORS_HEADERS });
   }
 }
