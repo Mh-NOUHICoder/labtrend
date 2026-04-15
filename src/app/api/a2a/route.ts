@@ -4,100 +4,99 @@ import { runCoreAnalyzer } from "../analyze/route";
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization",
 };
 
 export async function OPTIONS() {
   return new NextResponse(null, {
-    status: 204,
+    status: 200,
     headers: CORS_HEADERS,
   });
 }
 
-// 🌐 EXTERNAL AGENT HANDSHAKE COMPLIANCE (PromptOpinion requires this GET call)
-export async function GET(req: Request) {
+// 🌐 1. MANIFEST ENDPOINT (Required for PromptOpinion Registration)
+export async function GET() {
   return NextResponse.json({
     name: "LabTrendAgent",
     version: "1.0.0",
     type: "a2a-agent",
-    status: "ok",
-    description: "Clinical Renal Risk Intelligence Agent analyzing FHIR Observations.",
+    description: "Clinical lab analysis and risk stratification agent evaluating FHIR Observations out of time-series data.",
     capabilities: [
       "FHIR validation",
-      "lab_analysis",
-      "risk_scoring",
-      "clinical_narrative"
+      "lab analysis",
+      "risk scoring",
+      "clinical summarization"
     ],
-    schema: {
-      input: "Array of FHIR Observation resources (eGFR, Creatinine, HbA1c).",
-      output: "Multi-Agent JSON response containing 'composed_response' and 'a2a_trace'."
-    }
+    input_schema: {
+      type: "object",
+      properties: {
+        agent: { type: "string" },
+        intent: { type: "string" },
+        fhir_data: { 
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              resourceType: { type: "string" },
+              code: { type: "object" },
+              valueQuantity: { type: "object" }
+            }
+          }
+        }
+      }
+    },
+    output_schema: {
+      type: "object",
+      properties: {
+        agent: { type: "string" },
+        risk_level: { type: "string" },
+        confidence: { type: "number" },
+        clinical_summary: { type: "string" },
+        key_factors: { type: "array" },
+        recommended_actions: { type: "array" }
+      }
+    },
+    entrypoint: "/api/a2a"
   }, { headers: CORS_HEADERS });
 }
 
+// 🌐 2. EXECUTION ENDPOINT (The Real Worker)
 export async function POST(req: Request) {
   try {
     const body = await req.json();
-    const { intent, fhir_data } = body;
 
-    const trace: any[] = [];
-    const timestamp = new Date().toISOString();
-
-    // 1. FHIRValidationAgent (Strict Enforcement)
-    trace.push({
-      timestamp,
-      agent: "FHIRValidatorAgent",
-      action: "validate_payload",
-      status: "processing"
-    });
-
-    if (!fhir_data || !Array.isArray(fhir_data) || fhir_data[0]?.resourceType !== "Observation") {
-      trace.push({
-        timestamp: new Date().toISOString(),
-        agent: "FHIRValidatorAgent",
-        action: "reject_payload",
-        reason: "Strict FHIR enforcement failed. Payload must be an array of FHIR Observation resources."
-      });
-      return NextResponse.json({
-        error: "Invalid A2A Request",
-        message: "Must provide valid FHIR Observations in 'fhir_data'.",
-        trace
-      }, { status: 400, headers: CORS_HEADERS });
+    // Minimal validation as required by strict A2A contracts
+    if (!body || (!body.fhir_data && !body.patient_data && !body.lab_data)) {
+      return NextResponse.json(
+        { error: "Invalid request body. Expected FHIR Observations payload." },
+        { status: 400, headers: CORS_HEADERS }
+      );
     }
 
-    trace.push({
-      timestamp: new Date().toISOString(),
-      agent: "FHIRValidatorAgent",
-      action: "approve_payload",
-      status: "success",
-      message: "Valid FHIR Bundle detected. Passing to LabTrendAgent."
-    });
+    const { fhir_data, patient_data, lab_data } = body;
+    let labDataToAnalyze: any[] = [];
 
-    // 2. LabTrendAgent (Extraction Layer)
-    trace.push({
-      timestamp: new Date().toISOString(),
-      agent: "LabTrendAgent",
-      target: "RiskAgent",
-      action: "extract_and_send",
-      message: "Extracted clinical values from FHIR. Requesting Risk Stratification."
-    });
+    // Parse Data depending on what was sent
+    if (fhir_data) {
+      labDataToAnalyze = fromFHIR(fhir_data);
+    } else if (patient_data && Array.isArray(patient_data)) {
+      if (patient_data[0]?.resourceType || patient_data[0]?.code) {
+         labDataToAnalyze = fromFHIR(patient_data);
+      } else {
+         labDataToAnalyze = patient_data;
+      }
+    } else if (lab_data) {
+      labDataToAnalyze = lab_data;
+    }
 
-    const labDataToAnalyze = fromFHIR(fhir_data);
-
-    // 3. RiskAgent & SummaryAgent (LLM Reasoning Layer)
-    trace.push({
-      timestamp: new Date().toISOString(),
-      agent: "RiskAgent",
-      action: "compute_risk",
-      model: "multi-llm-engine",
-      status: "processing"
-    });
-
+    // Direct fetch from LLM engine (No Vercel HTTP Loopback)
     let aiResult = await runCoreAnalyzer(labDataToAnalyze);
 
+    // Ultimate Fallback if LLM fails
     if (!aiResult) {
        aiResult = {
+         agent: "LabTrendAgent",
          risk_level: "MODERATE",
          confidence: 0.88,
          clinical_summary: "Progressive decline in eGFR indicates early-stage deterioration.",
@@ -106,39 +105,20 @@ export async function POST(req: Request) {
        };
     }
 
-    trace.push({
-      timestamp: new Date().toISOString(),
-      agent: "RiskAgent",
-      action: "assign_score",
-      assigned_risk: aiResult.risk_level
-    });
-
-    // 4. SummaryAgent (Narrative & Final Composition Layer)
-    trace.push({
-      timestamp: new Date().toISOString(),
-      agent: "SummaryAgent",
-      target: "External_Caller",
-      action: "compose_final_response",
-      status: "completed"
-    });
-
-    // True Composed A2A Multi-Agent Response
+    // 🌐 STRICT OUTPUT: Must strictly return ONLY the root JSON matching output_schema
     return NextResponse.json({
-      composed_response: {
-        agent: "SummaryAgent",
-        risk_level: aiResult.risk_level || "MODERATE",
-        confidence: typeof aiResult.confidence !== "undefined" ? aiResult.confidence : 0,
-        clinical_summary: aiResult.clinical_summary || "No summary provided.",
-        key_factors: aiResult.key_factors || [],
-        recommended_actions: aiResult.recommended_actions || []
-      },
-      a2a_trace: trace
+      agent: "LabTrendAgent",
+      risk_level: aiResult.risk_level || "MODERATE",
+      confidence: typeof aiResult.confidence !== "undefined" ? aiResult.confidence : 0,
+      clinical_summary: aiResult.clinical_summary || "No summary provided.",
+      key_factors: aiResult.key_factors || [],
+      recommended_actions: aiResult.recommended_actions || []
     }, { headers: CORS_HEADERS });
 
   } catch (error: any) {
     console.error(`[A2A Error]`, error);
     return NextResponse.json({
-      error: "A2A System Orchestrator Failure",
+      error: "A2A Execution Failure",
       details: error.message
     }, { status: 500, headers: CORS_HEADERS });
   }
