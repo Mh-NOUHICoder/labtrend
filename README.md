@@ -19,10 +19,13 @@ This project strictly follows interoperability standards, shifting the focus fro
 
 ---
 
-## ✨ System Resiliency & AI Engine
+## ✨ Key Features & System Resiliency
 
 LabTrend integrates a highly fault-tolerant intelligence router:
+- **Strict A2A (0.3.0) Compliance**: Uses `message/send` JSON-RPC for native integration with Prompt Opinion and other agentic platforms.
 - **Auto-Fallback Routing**: Intelligently switches between `llama-3.3-70b-versatile` (Groq), `gemini-2.5-flash` (Google), and `gpt-4o-mini` (OpenAI) to ensure zero downtime.
+- **Multilingual Support**: Automatically detects input language and generates clinical summaries and recommendations in the user's native tongue, while preserving English for deterministic technical keys.
+- **FHIR File Extraction**: Scans embedded text from uploaded documents (PDFs, Logs) seamlessly alongside raw FHIR metadata.
 - **Fail-Safe Demo Mode**: If network conditions or API quotas fail during a live presentation, the system gracefully injects structured mock clinical analytics silently, guaranteeing an uninterrupted workflow demonstration.
 - **Strict JSON Adherence**: Zero markdown hallucination. The payload boundaries strictly adhere to the defined inter-agent data agreement.
 
@@ -34,14 +37,16 @@ LabTrend integrates a highly fault-tolerant intelligence router:
 labtrend/
 ├── src/
 │   ├── app/
+│   │   ├── .well-known/
+│   │   │   └── agent-card.json/route.ts  # 🌐 Production A2A Manifest (v0.3.0)
 │   │   ├── api/
-│   │   │   ├── a2a/           # Core Agent-to-Agent Intent Router
-│   │   │   ├── analyze/       # Multi-LLM Processing Pipeline
+│   │   │   ├── a2a/           # Core Agent-to-Agent Intent Router (JSON-RPC)
+│   │   │   ├── analyze/       # Multilingual Multi-LLM Processing Pipeline
+│   │   │   ├── health/        # Real-time System Status Check
 │   │   │   └── simulate/      # 🌟 HACKATHON DEMO: Multi-Agent Workflow Emulator
 │   │   └── dashboard/         # Visual representation Sandbox
 │   └── lib/                   
-│       ├── fhir.ts            # FHIR Bundle Parser
-│       ├── agent-meta.ts      # Agent Discovery Manifest
+│       ├── fhir.ts            # Time-Series Normalizing FHIR Bundle Parser
 │       └── trend.ts           # Arithmetic Medical logic
 ├── .env.local                 # Multi-Provider API Keys
 └── README.md                  
