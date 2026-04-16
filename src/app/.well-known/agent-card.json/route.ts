@@ -18,10 +18,19 @@ export async function GET() {
     "protocol": "A2A",
     "input_format": "FHIR",
     "output_format": "JSON",
-    "capabilities": [
-      "renal risk detection",
-      "trend analysis",
-      "clinical decision support"
+    "capabilities": {
+      "streaming": false,
+      "pushNotifications": false,
+      "stateTransitionHistory": true,
+      "extensions": []
+    },
+    "skills": [
+      {
+        "id": "renal_risk_detection",
+        "name": "Renal Risk Detection",
+        "description": "Detects trends in eGFR and creatinine",
+        "tags": ["renal", "lab-analysis"]
+      }
     ],
     "endpoint": "/api/a2a"
   }, {
