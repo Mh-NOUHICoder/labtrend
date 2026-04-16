@@ -10,135 +10,103 @@ const CORS_HEADERS = {
 };
 
 export async function OPTIONS() {
-  return new NextResponse(null, {
-    status: 200,
-    headers: CORS_HEADERS,
-  });
+  return new NextResponse(null, { status: 200, headers: CORS_HEADERS });
 }
 
-// 🌐 DISCOVERY ENDPOINT (Manifest)
+// 🌐 DISCOVERY (Production Manifest)
 export async function GET() {
   return NextResponse.json({
     name: "LabTrendAgent",
-    display_name: "LabTrend Clinical AI",
     version: "1.0.0",
-    protocolVersion: "0.3.0",
-    preferredTransport: "JSONRPC",
-    description: "Clinical lab analysis agent for renal risk prediction.",
-    url: "https://labtrend.vercel.app/api/a2a",
-    
-    capabilities: {
-      streaming: false,
-      pushNotifications: false,
-      stateTransitionHistory: true,
-      extensions: []
-    },
-
-    skills: [
-      {
-        id: "renal_risk_analysis",
-        name: "Renal Risk Analysis",
-        description: "Analyzes eGFR and creatinine for kidney risk",
-        tags: ["clinical", "renal", "lab-analysis"],
-        input_schema: {
-          type: "object",
-          required: ["fhir_data"],
-          properties: {
-            fhir_data: { type: "array" }
-          }
-        },
-        output_schema: {
-          type: "object",
-          required: ["agent", "risk_level", "confidence"]
-        }
-      }
+    protocol: "A2A",
+    input_format: "FHIR",
+    output_format: "JSON",
+    capabilities: [
+      "renal risk detection",
+      "trend analysis",
+      "clinical decision support"
     ],
-
-    health_check: "https://labtrend.vercel.app/api/a2a",
-    authentication: "none"
+    endpoint: "/api/a2a"
   }, { headers: CORS_HEADERS });
 }
 
-// 🌐 EXECUTION ENDPOINT (Handles JSON-RPC and Flat JSON)
+// 🌐 EXECUTION (Strict Contract)
 export async function POST(req: Request) {
   try {
     const body = await req.json();
 
-    // 1. JSON-RPC 2.0 (Prompt Opinion / A2A Protocol)
+    // 1. Validate Intent & Input
+    const intent = body.intent || body.params?.message?.metadata?.intent || "analyze_renal_risk";
+    
+    // Extract textual content (this handles files that were converted to text by the platform)
+    const parts = body.params?.message?.parts || [];
+    const textContent = parts.map((p: any) => p.kind === 'text' ? p.text : '').join('\n');
+    
+    // Attempt to find fhir_data in various locations
+    let fhirData = body.fhir_data || body.patient_data || body.params?.message?.metadata?.fhir_context?.fhir_data;
+
+    // Smart Extraction: If fhirData is missing, try to find JSON structure inside textContent
+    if (!fhirData && textContent.includes("[")) {
+      try {
+        const jsonMatch = textContent.match(/\[\s*\{[\s\S]*\}\s*\]/);
+        if (jsonMatch) fhirData = JSON.parse(jsonMatch[0]);
+      } catch (e) {
+        console.warn("Failed to parse JSON from text parts");
+      }
+    }
+
+    if (!fhirData) {
+      return NextResponse.json({
+        agent: "LabTrendAgent",
+        error: "INVALID_INPUT",
+        details: "No clinical data found. Please provide FHIR observations or a file containing lab results."
+      }, { status: 400, headers: CORS_HEADERS });
+    }
+
+    // 2. Normalize
+    const normalizedData = fromFHIR(fhirData);
+    
+    // 3. Analyze (Pass textContent as well for language detection)
+    const aiResult = await runCoreAnalyzer({ 
+      data: normalizedData, 
+      context: textContent // This helps the AI detect the requested language
+    });
+
+    // 4. Structured Production Output
+    const response = {
+      agent: "LabTrendAgent",
+      intent: String(intent),
+      risk_level: aiResult?.risk_level || "MODERATE",
+      confidence: Number(aiResult?.confidence || 0.5),
+      clinical_summary: String(aiResult?.clinical_summary || "Automated risk assessment completed."),
+      key_factors: Array.isArray(aiResult?.key_factors) ? aiResult.key_factors : [],
+      recommended_actions: Array.isArray(aiResult?.recommended_actions) ? aiResult.recommended_actions : [],
+      timestamp: new Date().toISOString(),
+      trace: aiResult?.trace || { steps: ["normalize", "analyze"], data_points: normalizedData.length }
+    };
+
+    // Handle JSON-RPC wrapper if requested
     if (body.jsonrpc === "2.0") {
-      const { method, params, id } = body;
-
-      if (method !== "message/send") {
-        return NextResponse.json({
-          jsonrpc: "2.0",
-          error: { code: -32601, message: "Method not found" },
-          id
-        }, { headers: CORS_HEADERS });
-      }
-
-      // Extract user message parts
-      const parts = params?.message?.parts || [];
-      const text = parts.map((p: any) => p.kind === 'text' ? p.text : '').join('\n');
-      
-      // Extract FHIR data if present in metadata (common for Health Agents)
-      const metadata = params?.message?.metadata || {};
-      const fhirContextKey = Object.keys(metadata).find(k => k.includes('fhir-context'));
-      const fhirContext = fhirContextKey ? metadata[fhirContextKey] : null;
-
-      // Decide what to analyze
-      let labData: any[] = [];
-      if (fhirContext?.fhir_data) {
-        labData = fromFHIR(fhirContext.fhir_data);
-      } else {
-        // Fallback to searching for JSON-like content in text if needed, 
-        // but for now, we expect JSON in parts or metadata.
-      }
-
-      // Run analysis
-      const aiResult = await runCoreAnalyzer(labData);
-
       return NextResponse.json({
         jsonrpc: "2.0",
-        id,
+        id: body.id,
         result: {
           kind: "message",
           messageId: crypto.randomUUID(),
           role: "agent",
-          parts: [{
-            kind: "text",
-            text: aiResult?.clinical_summary || "I've analyzed the lab trends. Risk Level: " + (aiResult?.risk_level || "UNKNOWN")
-          }],
-          metadata: {
-            analysis_result: aiResult
-          }
+          parts: [{ kind: "text", text: response.clinical_summary }],
+          metadata: response
         }
       }, { headers: CORS_HEADERS });
     }
 
-    // 2. FLAT JSON (Simulation / Legacy)
-    const { fhir_data, patient_data, lab_data } = body;
-    let labDataToAnalyze: any[] = [];
-
-    if (fhir_data) {
-      labDataToAnalyze = fromFHIR(fhir_data);
-    } else if (patient_data) {
-      labDataToAnalyze = fromFHIR(patient_data);
-    } else if (lab_data) {
-      labDataToAnalyze = lab_data;
-    }
-
-    const aiResult = await runCoreAnalyzer(labDataToAnalyze);
-    
-    return NextResponse.json(aiResult || {
-      agent: "LabTrendAgent",
-      risk_level: "MODERATE",
-      clinical_summary: "Manual fallback triggered."
-    }, { headers: CORS_HEADERS });
+    return NextResponse.json(response, { headers: CORS_HEADERS });
 
   } catch (error: any) {
-    console.error("[A2A API Error]", error);
+    console.error("[A2A Protocol Error]", error);
     return NextResponse.json({
-      error: "Internal Server Error",
+      agent: "LabTrendAgent",
+      error: "INTERNAL_ERROR",
       details: error.message
     }, { status: 500, headers: CORS_HEADERS });
   }

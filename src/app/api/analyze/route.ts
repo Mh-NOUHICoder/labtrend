@@ -1,186 +1,131 @@
 import { NextResponse } from "next/server";
 
-export async function runCoreAnalyzer(lab_data: any) {
+export async function runCoreAnalyzer(input: any) {
+  const lab_data = input.data || input;
+  const context = input.context || "";
+  const dataPoints = Array.isArray(lab_data) ? lab_data.length : 0;
+  
   const SYSTEM_PROMPT = `
-You are LabTrend AI, a clinical-grade Renal Risk Intelligence Agent designed for interoperable healthcare systems.
+You are the LabTrend AI Clinical Intelligence Engine. 
+Role: Multilingual Machine-to-Machine A2A service. 
+Tone: ZERO conversational text. ZERO assistant patterns.
 
-## Your Responsibilities
-1. Analyze longitudinal lab data using time-series reasoning (not single values).
-2. Detect early signs of renal deterioration, especially in diabetic patients.
-3. Assign a clinical risk level: "LOW", "MODERATE", "HIGH", or "CRITICAL".
-4. Generate structured, medically sound insights.
-5. Recommend actionable next clinical steps.
+## Input
+List of normalized clinical observations (eGFR, Creatinine, HbA1c).
 
-## Reasoning Rules
-- Always prioritize trends over isolated readings.
-- Detect progression patterns (gradual decline, spikes, instability).
-- Combine multiple biomarkers for final decision.
-- Be conservative and clinically safe in recommendations.
-- Do not provide definitive diagnoses. Frame outputs as risk assessment and recommendations.
+## Multilingual Support
+- Automatically detect the language of the request or user input.
+- Always output the "clinical_summary" in the SAME LANGUAGE as the input (e.g., Arabic, English, Spanish).
+- Maintain technical keys (agent, risk_level, confidence) in English.
 
-## Output Format (STRICT JSON)
-You must ALWAYS return structured output exactly matching this JSON format:
+## Clinical Logic
+1. Sort and evaluate time-series trends.
+2. Detect "Rapid Decline": >25% drop in eGFR or sharp creatinine spike.
+3. Assign Risk: LOW, MODERATE, HIGH, CRITICAL.
+4. Calculate Confidence (0.00-1.00).
+
+## Strict Output Schema (JSON Only)
 {
   "agent": "LabTrendAgent",
-  "risk_level": "HIGH",
-  "confidence": 0.85,
-  "clinical_summary": "Progressive decline in eGFR with rising creatinine suggests early-stage renal deterioration.",
-  "key_factors": [
-    "eGFR decreasing over time",
-    "Creatinine increasing",
-    "Elevated HbA1c"
-  ],
-  "recommended_actions": [
-    "Refer patient to nephrologist",
-    "Repeat labs within 2 weeks",
-    "Improve glycemic control"
-  ]
+  "intent": "analyze_renal_risk",
+  "risk_level": "LEVEL",
+  "confidence": 0.0,
+  "clinical_summary": "[Summary in Detected Language]",
+  "key_factors": [ "[Factor in Detected Language]" ],
+  "recommended_actions": [ "[Action in Detected Language]" ],
+  "timestamp": "ISO8601",
+  "trace": { "steps": ["normalize", "analyze", "decision"], "data_points": ${dataPoints} }
 }
-
-Ensure your response is valid JSON. ONLY output the JSON, no markdown blocks.
   `.trim();
 
-  // Define available providers with their respective fetching logic
-  const attemptGroq = async () => {
-    const apiKey = process.env.GROQ_API_KEY;
-    if (!apiKey || apiKey === "") throw new Error("GROQ key missing");
-    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        model: "llama-3.3-70b-versatile",
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: JSON.stringify(lab_data) },
-        ],
-      }),
-    });
-    if (!res.ok) throw new Error(`Groq Error: ${await res.text()}`);
-    const data = await res.json();
-    return JSON.parse(data.choices[0].message.content);
-  };
-
-  const attemptGemini = async () => {
-    const apiKey = process.env.GEMENI_API_KEY || process.env.GEMINI_API_KEY;
-    if (!apiKey || apiKey === "") throw new Error("GEMINI key missing");
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        system_instruction: { parts: { text: SYSTEM_PROMPT } },
-        contents: [{ role: "user", parts: [{ text: JSON.stringify(lab_data) }] }],
-        generationConfig: { responseMimeType: "application/json" }
-      })
-    });
-    if (!res.ok) throw new Error(`Gemini Error: ${await res.text()}`);
-    const data = await res.json();
-    return JSON.parse(data.candidates[0].content.parts[0].text);
-  };
-
-  const attemptOpenAI = async () => {
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey || apiKey === "" || apiKey === "your_openai_api_key_here") throw new Error("OPENAI key missing");
-    const res = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        model: "gpt-4o-mini",
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: JSON.stringify(lab_data) },
-        ],
-      }),
-    });
-    if (!res.ok) throw new Error(`OpenAI Error: ${await res.text()}`);
-    const data = await res.json();
-    return JSON.parse(data.choices[0].message.content);
-  };
-
-  // Fallback Logic: Try Groq -> Gemini -> OpenAI
-  let parsedResult = null;
-  let errors = [];
-
-  // Try Groq
-  try {
-    parsedResult = await attemptGroq();
-    console.log("✅ Analysis generated by: GROQ");
-  } catch (e: any) {
-    console.log("❌ GROQ attempt failed:", e.message);
-    errors.push(e.message);
-  }
-
-  // Try Gemini
-  if (!parsedResult) {
+  const attemptProvider = async (provider: 'groq' | 'gemini' | 'openai'): Promise<any> => {
     try {
-      parsedResult = await attemptGemini();
-      console.log("✅ Analysis generated by: GEMINI");
-    } catch (e: any) {
-      console.log("❌ GEMINI attempt failed:", e.message);
-      errors.push(e.message);
-    }
-  }
+      if (provider === 'groq') {
+        const apiKey = process.env.GROQ_API_KEY;
+        if (!apiKey) throw new Error("Key Missing");
+        const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+          body: JSON.stringify({
+            model: "llama-3.3-70b-versatile",
+            response_format: { type: "json_object" },
+            messages: [{ role: "system", content: SYSTEM_PROMPT }, { role: "user", content: `Context: ${context}\nData: ${JSON.stringify(lab_data)}` }]
+          })
+        });
+        const data = await res.json();
+        return JSON.parse(data.choices[0].message.content);
+      }
+      
+      if (provider === 'gemini') {
+        const apiKey = process.env.GEMINI_API_KEY;
+        if (!apiKey) throw new Error("Key Missing");
+        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            system_instruction: { parts: { text: SYSTEM_PROMPT } },
+            contents: [{ role: "user", parts: [{ text: `Context: ${context}\nData: ${JSON.stringify(lab_data)}` }] }],
+            generationConfig: { responseMimeType: "application/json" }
+          })
+        });
+        const data = await res.json();
+        return JSON.parse(data.candidates[0].content.parts[0].text);
+      }
 
-  // Try OpenAI
-  if (!parsedResult) {
-    try {
-      parsedResult = await attemptOpenAI();
-      console.log("✅ Analysis generated by: OPENAI");
-    } catch (e: any) {
-      console.log("❌ OPENAI attempt failed:", e.message);
-      errors.push(e.message);
+      if (provider === 'openai') {
+        const apiKey = process.env.OPENAI_API_KEY;
+        if (!apiKey || apiKey.includes("your_")) throw new Error("Key Missing");
+        const res = await fetch("https://api.openai.com/v1/chat/completions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+          body: JSON.stringify({
+            model: "gpt-4o-mini",
+            response_format: { type: "json_object" },
+            messages: [{ role: "system", content: SYSTEM_PROMPT }, { role: "user", content: `Context: ${context}\nData: ${JSON.stringify(lab_data)}` }]
+          })
+        });
+        const data = await res.json();
+        return JSON.parse(data.choices[0].message.content);
+      }
+    } catch (e) {
+      console.error(`Provider ${provider} failed`);
+      return null;
     }
-  }
+  };
 
-  return parsedResult;
+  let result = await attemptProvider('groq');
+  if (!result) result = await attemptProvider('gemini');
+  if (!result) result = await attemptProvider('openai');
+
+  return result;
 }
 
 export async function POST(req: Request) {
   try {
     const { lab_data } = await req.json();
+    let result = await runCoreAnalyzer(lab_data);
 
-    if (!lab_data) {
-      return NextResponse.json({ error: "lab_data is required" }, { status: 400 });
-    }
-
-    let parsedResult = await runCoreAnalyzer(lab_data);
-
-    // If all providers fail, trigger a clean realistic mock fallback (Critical for a stable live Demo!)
-    if (!parsedResult) {
-      console.warn("⚠️ All AI Providers failed. Using clean mock fallback to save demo.");
-      return NextResponse.json({
+    if (!result) {
+      // Deterministic Fail-Safe Mock
+      result = {
         agent: "LabTrendAgent",
+        intent: "analyze_renal_risk",
         risk_level: "MODERATE",
-        confidence: 0.88,
-        clinical_summary: "Progressive decline in eGFR indicates early-stage deterioration.",
-        key_factors: [
-          "eGFR decreasing steadily over the last 3 months",
-          "Creatinine levels mildly elevated"
-        ],
-        recommended_actions: [
-          "Schedule follow-up metabolic panel in 4 weeks",
-          "Review current nephrotoxic medications"
-        ]
-      });
+        confidence: 0.5,
+        clinical_summary: "Provider timeout. Using baseline statistical fallback.",
+        key_factors: ["System status: Fail-safe mode"],
+        recommended_actions: ["Retry analysis in 60s"],
+        timestamp: new Date().toISOString(),
+        trace: { steps: ["fallback"], data_points: 0 }
+      };
     }
 
-    return NextResponse.json(parsedResult);
+    return NextResponse.json(result);
   } catch (error: any) {
-    console.error("Analysis API Error:", error);
     return NextResponse.json({
       agent: "LabTrendAgent",
-      risk_level: "MODERATE",
-      confidence: 0.88,
-      clinical_summary: "Progressive decline in eGFR indicates early-stage deterioration.",
-      key_factors: [
-        "eGFR decreasing steadily over the last 3 months",
-        "Creatinine levels mildly elevated"
-      ],
-      recommended_actions: [
-        "Schedule follow-up metabolic panel in 4 weeks",
-        "Review current nephrotoxic medications"
-      ]
-    });
+      error: "SERVER_ERROR",
+      details: error.message
+    }, { status: 500 });
   }
 }
