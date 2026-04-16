@@ -59,42 +59,47 @@ export async function POST(req: Request) {
     // 1. Validate Intent & Input
     const intent = body.intent || body.params?.message?.metadata?.intent || "analyze_renal_risk";
     
-    // Extract textual content (Handles both JSON-RPC and flat 'message' strings)
+    // 1. Robust Content Extraction (Handles ALL Prompt Opinion tool variants)
     let textContent = "";
-    if (typeof body.message === 'string') {
-      textContent = body.message;
-    } else {
-      const parts = body.params?.message?.parts || [];
+    if (typeof body.message === 'string') textContent = body.message;
+    else if (typeof body.text === 'string') textContent = body.text;
+    else if (typeof body.input === 'string') textContent = body.input;
+    else {
+      const parts = body.params?.message?.parts || body.message?.parts || [];
       textContent = parts.map((p: any) => p.kind === 'text' ? p.text : '').join('\n');
     }
     
-    // Attempt to find fhir_data in various locations
-    let fhirData = body.fhir_data || body.patient_data || body.params?.message?.metadata?.fhir_context?.fhir_data;
+    // 2. Robust FHIR/JSON Extraction
+    let fhirData = body.fhir_data || body.patient_data || body.params?.message?.metadata?.fhir_context?.fhir_data || body.metadata?.fhir_context?.fhir_data;
 
-    // Smart Extraction: If fhirData is missing, try to find JSON structure inside textContent
+    // Deep scan text for JSON if fhirData is still missing
     if (!fhirData && textContent.includes("[")) {
       try {
         const jsonMatch = textContent.match(/\[\s*\{[\s\S]*\}\s*\]/);
         if (jsonMatch) fhirData = JSON.parse(jsonMatch[0]);
       } catch (e) {
-        console.warn("Failed to parse JSON from text parts");
+        // Fallback to LLM extraction handled below
       }
     }
 
-    // If still no fhirData, but we have text, let's treat the text itself as the clinical data.
-    // The Prompt Opinion Orchestrator often summarizes JSON into plain text before making the A2A call.
+    // 3. Prevent 400 Errors - Treat any text context as data
     let normalizedData: any = [];
     if (fhirData) {
       normalizedData = fromFHIR(fhirData);
-    } else if (textContent.trim()) {
-      // Pass the summarized text directly to the AI
-      normalizedData = textContent;
+    } else if (textContent.trim().length > 0) {
+      normalizedData = textContent; // LLM will handle the extraction
     } else {
-      return NextResponse.json({
-        agent: "LabTrendAgent",
-        error: "INVALID_INPUT",
-        details: "No clinical data found. Please provide FHIR observations or describe the patient's lab results."
-      }, { status: 400, headers: CORS_HEADERS });
+      // Last resort: check if the body itself has recognizable keys
+      const possibleData = body.lab_data || body.observations;
+      if (possibleData) {
+        normalizedData = possibleData;
+      } else {
+        return NextResponse.json({
+          agent: "LabTrendAgent",
+          error: "INVALID_INPUT",
+          details: "No clinical content detected in the request."
+        }, { status: 400, headers: CORS_HEADERS });
+      }
     }
 
     // 3. Analyze (Pass textContent as well for language detection)
