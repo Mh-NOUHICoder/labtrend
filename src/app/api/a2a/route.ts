@@ -56,56 +56,56 @@ export async function POST(req: Request) {
   try {
     const body = await req.json();
 
-    // 1. Validate Intent & Input
-    const intent = body.intent || body.params?.message?.metadata?.intent || "analyze_renal_risk";
-    
-    // 1. Robust Content Extraction (Handles ALL Prompt Opinion tool variants)
-    let textContent = "";
-    if (typeof body.message === 'string') textContent = body.message;
-    else if (typeof body.text === 'string') textContent = body.text;
-    else if (typeof body.input === 'string') textContent = body.input;
-    else {
-      const parts = body.params?.message?.parts || body.message?.parts || [];
-      textContent = parts.map((p: any) => p.kind === 'text' ? p.text : '').join('\n');
-    }
-    
-    // 2. Robust FHIR/JSON Extraction
-    let fhirData = body.fhir_data || body.patient_data || body.params?.message?.metadata?.fhir_context?.fhir_data || body.metadata?.fhir_context?.fhir_data;
+    // 1. IMPROVED: Deep Keyword Extraction (Search across the entire object)
+    const findValue = (obj: any, key: string): any => {
+      if (!obj || typeof obj !== 'object') return null;
+      if (obj[key]) return obj[key];
+      for (const k in obj) {
+        const found = findValue(obj[k], key);
+        if (found) return found;
+      }
+      return null;
+    };
 
-    // Deep scan text for JSON if fhirData is still missing
-    if (!fhirData && textContent.includes("[")) {
+    let textContent = findValue(body, 'message') || findValue(body, 'text') || findValue(body, 'input') || findValue(body, 'content') || "";
+    if (typeof textContent !== 'string' && textContent?.parts) {
+      textContent = textContent.parts.map((p: any) => p.kind === 'text' ? p.text : p.content || "").join('\n');
+    }
+
+    let fhirData = findValue(body, 'fhir_data') || findValue(body, 'patient_data') || findValue(body, 'fhir_context') || findValue(body, 'data');
+    if (fhirData?.fhir_data) fhirData = fhirData.fhir_data; // Unpack nested context
+
+    // 2. Intent detection
+    const intent = findValue(body, 'intent') || "analyze_renal_risk";
+
+    // 3. Scan text for JSON if structural data is missing
+    if (!fhirData && typeof textContent === 'string' && textContent.includes("[")) {
       try {
         const jsonMatch = textContent.match(/\[\s*\{[\s\S]*\}\s*\]/);
         if (jsonMatch) fhirData = JSON.parse(jsonMatch[0]);
-      } catch (e) {
-        // Fallback to LLM extraction handled below
-      }
+      } catch (e) {}
     }
 
-    // 3. Prevent 400 Errors - Treat any text context as data
+    // 4. Decision Logic
     let normalizedData: any = [];
     if (fhirData) {
       normalizedData = fromFHIR(fhirData);
-    } else if (textContent.trim().length > 0) {
-      normalizedData = textContent; // LLM will handle the extraction
+    } else if (String(textContent).trim().length > 0) {
+      normalizedData = String(textContent);
     } else {
-      // Last resort: check if the body itself has recognizable keys
-      const possibleData = body.lab_data || body.observations;
-      if (possibleData) {
-        normalizedData = possibleData;
-      } else {
-        return NextResponse.json({
-          agent: "LabTrendAgent",
-          error: "INVALID_INPUT",
-          details: "No clinical content detected in the request."
-        }, { status: 400, headers: CORS_HEADERS });
-      }
+      // DEBUG: If it still fails, return the keys we received
+      const keysEncountered = Object.keys(body).join(', ');
+      return NextResponse.json({
+        agent: "LabTrendAgent",
+        error: "INVALID_INPUT",
+        details: `No data found. Received keys: [${keysEncountered}]. Please check manifest.`
+      }, { status: 400, headers: CORS_HEADERS });
     }
 
-    // 3. Analyze (Pass textContent as well for language detection)
+    // 5. Run Analyzer
     const aiResult = await runCoreAnalyzer({ 
       data: normalizedData, 
-      context: textContent // This helps the AI detect the requested language
+      context: String(textContent)
     });
 
     // 4. Structured Production Output
