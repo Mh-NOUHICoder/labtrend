@@ -59,9 +59,14 @@ export async function POST(req: Request) {
     // 1. Validate Intent & Input
     const intent = body.intent || body.params?.message?.metadata?.intent || "analyze_renal_risk";
     
-    // Extract textual content (this handles files that were converted to text by the platform)
-    const parts = body.params?.message?.parts || [];
-    const textContent = parts.map((p: any) => p.kind === 'text' ? p.text : '').join('\n');
+    // Extract textual content (Handles both JSON-RPC and flat 'message' strings)
+    let textContent = "";
+    if (typeof body.message === 'string') {
+      textContent = body.message;
+    } else {
+      const parts = body.params?.message?.parts || [];
+      textContent = parts.map((p: any) => p.kind === 'text' ? p.text : '').join('\n');
+    }
     
     // Attempt to find fhir_data in various locations
     let fhirData = body.fhir_data || body.patient_data || body.params?.message?.metadata?.fhir_context?.fhir_data;
