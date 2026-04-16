@@ -14,10 +14,22 @@ export async function OPTIONS() {
 export async function GET() {
   return NextResponse.json({
     "name": "LabTrendAgent",
+    "description": "Clinical lab analysis agent for renal risk prediction.",
     "version": "1.0.0",
     "protocol": "A2A",
+    "protocolVersion": "0.3.0",
+    "preferredTransport": "JSONRPC",
     "input_format": "FHIR",
     "output_format": "JSON",
+    "defaultInputModes": ["text/plain", "application/json"],
+    "defaultOutputModes": ["text/plain", "application/json"],
+    "supportedInterfaces": [
+      {
+        "url": "https://labtrend.vercel.app/api/a2a",
+        "protocolBinding": "JSONRPC",
+        "protocolVersion": "0.3.0"
+      }
+    ],
     "capabilities": {
       "streaming": false,
       "pushNotifications": false,
