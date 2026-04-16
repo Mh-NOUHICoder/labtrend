@@ -76,17 +76,22 @@ export async function POST(req: Request) {
       }
     }
 
-    if (!fhirData) {
+    // If still no fhirData, but we have text, let's treat the text itself as the clinical data.
+    // The Prompt Opinion Orchestrator often summarizes JSON into plain text before making the A2A call.
+    let normalizedData: any = [];
+    if (fhirData) {
+      normalizedData = fromFHIR(fhirData);
+    } else if (textContent.trim()) {
+      // Pass the summarized text directly to the AI
+      normalizedData = textContent;
+    } else {
       return NextResponse.json({
         agent: "LabTrendAgent",
         error: "INVALID_INPUT",
-        details: "No clinical data found. Please provide FHIR observations or a file containing lab results."
+        details: "No clinical data found. Please provide FHIR observations or describe the patient's lab results."
       }, { status: 400, headers: CORS_HEADERS });
     }
 
-    // 2. Normalize
-    const normalizedData = fromFHIR(fhirData);
-    
     // 3. Analyze (Pass textContent as well for language detection)
     const aiResult = await runCoreAnalyzer({ 
       data: normalizedData, 
