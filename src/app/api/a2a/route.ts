@@ -36,8 +36,10 @@ export async function GET() {
 
     skills: [
       {
-        name: "renal_risk_analysis",
+        id: "renal_risk_analysis",
+        name: "Renal Risk Analysis",
         description: "Analyzes eGFR and creatinine for kidney risk",
+        tags: ["clinical", "renal", "lab-analysis"],
         input_schema: {
           type: "object",
           required: ["fhir_data"],
