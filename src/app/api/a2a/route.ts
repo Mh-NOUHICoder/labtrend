@@ -6,11 +6,11 @@ import { runCoreAnalyzer } from "../analyze/route";
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization, X-API-Key",
+  "Access-Control-Allow-Headers": "*", // Allow all headers for debugging
 };
 
 export async function OPTIONS() {
-  return new NextResponse(null, { status: 200, headers: CORS_HEADERS });
+  return new NextResponse(null, { status: 204, headers: CORS_HEADERS });
 }
 
 // 🌐 DISCOVERY (Production Manifest)
@@ -47,16 +47,19 @@ export async function GET() {
         "tags": ["renal", "lab-analysis"]
       }
     ],
-    "endpoint": "/api/a2a"
+    "endpoint": "https://labtrend.vercel.app/api/a2a" // Absolute URL
   }, { headers: CORS_HEADERS });
 }
 
 // 🌐 EXECUTION (Strict Contract)
 export async function POST(req: Request) {
   try {
-    const body = await req.json();
+    const rawBody = await req.text();
+    if (!rawBody) throw new Error("Empty request body");
+    
+    const body = JSON.parse(rawBody);
 
-    // 1. IMPROVED: Deep Keyword Extraction (Search across the entire object)
+    // 1. IMPROVED: Deep Keyword Extraction
     const findValue = (obj: any, key: string): any => {
       if (!obj || typeof obj !== 'object') return null;
       if (obj[key]) return obj[key];
@@ -73,12 +76,10 @@ export async function POST(req: Request) {
     }
 
     let fhirData = findValue(body, 'fhir_data') || findValue(body, 'patient_data') || findValue(body, 'fhir_context') || findValue(body, 'data');
-    if (fhirData?.fhir_data) fhirData = fhirData.fhir_data; // Unpack nested context
+    if (fhirData?.fhir_data) fhirData = fhirData.fhir_data;
 
-    // 2. Intent detection
     const intent = findValue(body, 'intent') || "analyze_renal_risk";
 
-    // 3. Scan text for JSON if structural data is missing
     if (!fhirData && typeof textContent === 'string' && textContent.includes("[")) {
       try {
         const jsonMatch = textContent.match(/\[\s*\{[\s\S]*\}\s*\]/);
@@ -86,42 +87,38 @@ export async function POST(req: Request) {
       } catch (e) {}
     }
 
-    // 4. Decision Logic
     let normalizedData: any = [];
     if (fhirData) {
       normalizedData = fromFHIR(fhirData);
     } else if (String(textContent).trim().length > 0) {
       normalizedData = String(textContent);
     } else {
-      // DEBUG: If it still fails, return the keys we received
-      const keysEncountered = Object.keys(body).join(', ');
+      // Returning 200 with error details to bypass PO's generic 400 error handling
       return NextResponse.json({
         agent: "LabTrendAgent",
+        status: "error",
         error: "INVALID_INPUT",
-        details: `No data found. Received keys: [${keysEncountered}]. Please check manifest.`
-      }, { status: 400, headers: CORS_HEADERS });
+        details: `No data found. Keys received: [${Object.keys(body).join(', ')}]`
+      }, { status: 200, headers: CORS_HEADERS });
     }
 
-    // 5. Run Analyzer
     const aiResult = await runCoreAnalyzer({ 
       data: normalizedData, 
       context: String(textContent)
     });
 
-    // 4. Structured Production Output
     const response = {
       agent: "LabTrendAgent",
       intent: String(intent),
       risk_level: aiResult?.risk_level || "MODERATE",
       confidence: Number(aiResult?.confidence || 0.5),
-      clinical_summary: String(aiResult?.clinical_summary || "Automated risk assessment completed."),
+      clinical_summary: String(aiResult?.clinical_summary || "Assessment complete."),
       key_factors: Array.isArray(aiResult?.key_factors) ? aiResult.key_factors : [],
       recommended_actions: Array.isArray(aiResult?.recommended_actions) ? aiResult.recommended_actions : [],
       timestamp: new Date().toISOString(),
       trace: aiResult?.trace || { steps: ["normalize", "analyze"], data_points: normalizedData.length }
     };
 
-    // Handle JSON-RPC wrapper if requested
     if (body.jsonrpc === "2.0") {
       return NextResponse.json({
         jsonrpc: "2.0",
@@ -139,11 +136,11 @@ export async function POST(req: Request) {
     return NextResponse.json(response, { headers: CORS_HEADERS });
 
   } catch (error: any) {
-    console.error("[A2A Protocol Error]", error);
     return NextResponse.json({
       agent: "LabTrendAgent",
-      error: "INTERNAL_ERROR",
+      status: "error",
+      error: "INTERNAL_EXCEPTION",
       details: error.message
-    }, { status: 500, headers: CORS_HEADERS });
+    }, { status: 200, headers: CORS_HEADERS });
   }
 }
