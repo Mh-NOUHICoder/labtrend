@@ -46,7 +46,7 @@ function buildTask(
     id: taskId,
     ...(sessionId ? { sessionId } : {}),
     status: {
-      state: "completed",
+      state: "COMPLETED",
       timestamp: new Date().toISOString(),
       // Embed the agent reply inside status.message so the SDK can read it
       message: {
