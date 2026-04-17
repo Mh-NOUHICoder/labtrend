@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import crypto from "crypto";
 import { fromFHIR } from "../../../lib/fhir";
 import { runCoreAnalyzer } from "../analyze/route";
+import { buildA2AResponse, buildA2AErrorResponse } from "../../../lib/a2a-utils";
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -11,60 +12,6 @@ const CORS_HEADERS = {
 
 export async function OPTIONS() {
   return new NextResponse(null, { status: 204, headers: CORS_HEADERS });
-}
-
-// ─── JSON-RPC helpers ────────────────────────────────────────────────────────
-
-function rpcResult(id: string | number, result: unknown) {
-  return NextResponse.json(
-    { jsonrpc: "2.0", id, result },
-    { headers: CORS_HEADERS }
-  );
-}
-
-function rpcError(
-  id: string | number,
-  code: number,
-  message: string,
-  data?: unknown
-) {
-  return NextResponse.json(
-    { jsonrpc: "2.0", id, error: { code, message, ...(data ? { data } : {}) } },
-    { headers: CORS_HEADERS }
-  );
-}
-
-// ─── A2A Task shape (spec-compliant) ─────────────────────────────────────────
-
-function buildTask(
-  taskId: string,
-  sessionId: string | undefined,
-  summary: string,
-  metadata: Record<string, unknown>
-) {
-  return {
-    id: taskId,
-    ...(sessionId ? { sessionId } : {}),
-    status: {
-      state: "Completed",
-      timestamp: new Date().toISOString(),
-      // Embed the agent reply inside status.message so the SDK can read it
-      message: {
-        role: "agent",
-        parts: [{ type: "text", text: summary }],
-      },
-    },
-    artifacts: [
-      {
-        name: "clinical_analysis",
-        parts: [{ type: "text", text: summary }],
-      },
-      {
-        name: "metadata",
-        parts: [{ type: "text", text: JSON.stringify(metadata, null, 2) }],
-      },
-    ],
-  };
 }
 
 // ─── Deep key search ──────────────────────────────────────────────────────────
@@ -160,7 +107,12 @@ export async function POST(req: Request) {
 
   try {
     rawBody = await req.text();
-    if (!rawBody.trim()) return rpcError("unknown", -32700, "Empty body");
+    if (!rawBody.trim()) {
+      return NextResponse.json(
+        buildA2AErrorResponse("unknown", -32700, "Empty body"),
+        { headers: CORS_HEADERS }
+      );
+    }
 
     const body = JSON.parse(rawBody) as Record<string, unknown>;
     requestId = (body.id as string | number) ?? "1";
@@ -231,16 +183,16 @@ export async function POST(req: Request) {
 
     if (isBarePatiendId) {
       const patientId = textContent.trim();
-      return rpcResult(
-        requestId,
-        {
-          task: buildTask(
-            taskId,
-            sessionId,
-            `Hello! I am LabTrend, a clinical AI agent specialised in renal risk prediction. I can see patient ID ${patientId} is selected. To perform a full renal risk assessment, please provide the patient's recent lab results — eGFR, Creatinine and/or HbA1c values with dates. You can paste them as text or send structured FHIR observations.`,
-            { agent: "LabTrendAgent", intent: "request_lab_data", patient_id: patientId, timestamp: new Date().toISOString() }
-          )
-        }
+      return NextResponse.json(
+        buildA2AResponse(
+          requestId,
+          taskId,
+          "COMPLETED",
+          `Hello! I am LabTrend, a clinical AI agent specialised in renal risk prediction. I can see patient ID ${patientId} is selected. To perform a full renal risk assessment, please provide the patient's recent lab results — eGFR, Creatinine and/or HbA1c values with dates. You can paste them as text or send structured FHIR observations.`,
+          { agent: "LabTrendAgent", intent: "request_lab_data", patient_id: patientId, timestamp: new Date().toISOString() },
+          sessionId
+        ),
+        { headers: CORS_HEADERS }
       );
     }
 
@@ -249,18 +201,17 @@ export async function POST(req: Request) {
     } else if (textContent.trim().length > 0) {
       normalizedData = textContent;
     } else {
-      // No data at all (e.g. empty ping) — return a friendly Task so the SDK
-      // doesn't throw "external agent did not respond with a task"
-      return rpcResult(
-        requestId,
-        {
-          task: buildTask(
-            taskId,
-            sessionId,
-            "Hello! I am LabTrend, a clinical AI agent specialised in renal risk prediction. Please share lab results (eGFR, Creatinine, HbA1c) or a clinical question and I will analyse the data for you.",
-            { agent: "LabTrendAgent", intent: "greeting", timestamp: new Date().toISOString() }
-          )
-        }
+      // No data at all (e.g. empty ping)
+      return NextResponse.json(
+        buildA2AResponse(
+          requestId,
+          taskId,
+          "COMPLETED",
+          "Hello! I am LabTrend, a clinical AI agent specialised in renal risk prediction. Please share lab results (eGFR, Creatinine, HbA1c) or a clinical question and I will analyse the data for you.",
+          { agent: "LabTrendAgent", intent: "greeting", timestamp: new Date().toISOString() },
+          sessionId
+        ),
+        { headers: CORS_HEADERS }
       );
     }
 
@@ -291,13 +242,23 @@ export async function POST(req: Request) {
       },
     };
 
-    // ── Return spec-compliant Task object ─────────────────────────────────────
-    return rpcResult(
-      requestId,
-      { task: buildTask(taskId, sessionId, metadata.clinical_summary, metadata) }
+    // ── Return strictly compliant A2A response ───────────────────────────────
+    return NextResponse.json(
+      buildA2AResponse(
+        requestId,
+        taskId,
+        "COMPLETED",
+        metadata.clinical_summary,
+        metadata,
+        sessionId
+      ),
+      { headers: CORS_HEADERS }
     );
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : String(error);
-    return rpcError(requestId, -32603, "Internal Server Error", msg);
+    return NextResponse.json(
+      buildA2AErrorResponse(requestId, -32603, "Internal Server Error", msg),
+      { headers: CORS_HEADERS }
+    );
   }
 }

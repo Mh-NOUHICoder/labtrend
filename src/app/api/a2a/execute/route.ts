@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import crypto from "crypto";
 import { fromFHIR } from "../../../../lib/fhir";
 import { runCoreAnalyzer } from "../../analyze/route";
+import { buildA2AResponse, buildA2AErrorResponse } from "../../../../lib/a2a-utils";
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -24,40 +25,38 @@ export async function POST(req: Request) {
     // 1. JSON-RPC 2.0 (Prompt Opinion / A2A Protocol)
     if (body.jsonrpc === "2.0") {
       const { method, params, id } = body;
-      if (method !== "message/send") {
-        return NextResponse.json({
-          jsonrpc: "2.0",
-          error: { code: -32601, message: "Method not found" },
-          id
-        }, { headers: CORS_HEADERS });
+      
+      // We accept various methods but handle them consistently
+      const KNOWN_METHODS = ["tasks/send", "message/send", "sendmessage", "tasks/run", "run"];
+      const requestedMethod = (method as string)?.toLowerCase() || "";
+      
+      if (requestedMethod && !KNOWN_METHODS.includes(requestedMethod)) {
+        return NextResponse.json(
+          buildA2AErrorResponse(id, -32601, `Method not found: ${method}`),
+          { headers: CORS_HEADERS }
+        );
       }
 
-      const parts = params?.message?.parts || [];
-      const metadata = params?.message?.metadata || {};
-      const fhirContextKey = Object.keys(metadata).find(k => k.includes('fhir-context'));
-      const fhirContext = fhirContextKey ? metadata[fhirContextKey] : null;
-
+      const metadata = params?.message?.metadata || params?.metadata || {};
+      const fhirData = params?.message?.fhir_data || params?.fhir_data || body.fhir_data || null;
+      
       let labData: any[] = [];
-      if (fhirContext?.fhir_data) {
-        labData = fromFHIR(fhirContext.fhir_data);
+      if (fhirData) {
+        labData = fromFHIR(fhirData);
       }
 
       const aiResult = await runCoreAnalyzer(labData);
 
-      return NextResponse.json({
-        jsonrpc: "2.0",
-        id,
-        result: {
-          kind: "message",
-          messageId: crypto.randomUUID(),
-          role: "agent",
-          parts: [{
-            kind: "text",
-            text: aiResult?.clinical_summary || "I've analyzed the lab trends. Risk Level: " + (aiResult?.risk_level || "UNKNOWN")
-          }],
-          metadata: { analysis_result: aiResult }
-        }
-      }, { headers: CORS_HEADERS });
+      return NextResponse.json(
+        buildA2AResponse(
+          id,
+          crypto.randomUUID(),
+          "COMPLETED",
+          aiResult?.clinical_summary || "Assessment complete.",
+          { ...metadata, analysis_result: aiResult }
+        ), 
+        { headers: CORS_HEADERS }
+      );
     }
 
     // 2. FLAT JSON (Standard/Legacy)
