@@ -233,12 +233,14 @@ export async function POST(req: Request) {
       const patientId = textContent.trim();
       return rpcResult(
         requestId,
-        buildTask(
-          taskId,
-          sessionId,
-          `Hello! I am LabTrend, a clinical AI agent specialised in renal risk prediction. I can see patient ID ${patientId} is selected. To perform a full renal risk assessment, please provide the patient's recent lab results — eGFR, Creatinine and/or HbA1c values with dates. You can paste them as text or send structured FHIR observations.`,
-          { agent: "LabTrendAgent", intent: "request_lab_data", patient_id: patientId, timestamp: new Date().toISOString() }
-        )
+        {
+          task: buildTask(
+            taskId,
+            sessionId,
+            `Hello! I am LabTrend, a clinical AI agent specialised in renal risk prediction. I can see patient ID ${patientId} is selected. To perform a full renal risk assessment, please provide the patient's recent lab results — eGFR, Creatinine and/or HbA1c values with dates. You can paste them as text or send structured FHIR observations.`,
+            { agent: "LabTrendAgent", intent: "request_lab_data", patient_id: patientId, timestamp: new Date().toISOString() }
+          )
+        }
       );
     }
 
@@ -251,12 +253,14 @@ export async function POST(req: Request) {
       // doesn't throw "external agent did not respond with a task"
       return rpcResult(
         requestId,
-        buildTask(
-          taskId,
-          sessionId,
-          "Hello! I am LabTrend, a clinical AI agent specialised in renal risk prediction. Please share lab results (eGFR, Creatinine, HbA1c) or a clinical question and I will analyse the data for you.",
-          { agent: "LabTrendAgent", intent: "greeting", timestamp: new Date().toISOString() }
-        )
+        {
+          task: buildTask(
+            taskId,
+            sessionId,
+            "Hello! I am LabTrend, a clinical AI agent specialised in renal risk prediction. Please share lab results (eGFR, Creatinine, HbA1c) or a clinical question and I will analyse the data for you.",
+            { agent: "LabTrendAgent", intent: "greeting", timestamp: new Date().toISOString() }
+          )
+        }
       );
     }
 
@@ -290,7 +294,7 @@ export async function POST(req: Request) {
     // ── Return spec-compliant Task object ─────────────────────────────────────
     return rpcResult(
       requestId,
-      buildTask(taskId, sessionId, metadata.clinical_summary, metadata)
+      { task: buildTask(taskId, sessionId, metadata.clinical_summary, metadata) }
     );
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : String(error);
