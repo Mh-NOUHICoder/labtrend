@@ -38,14 +38,21 @@ function rpcError(
 
 function buildTask(
   taskId: string,
+  sessionId: string | undefined,
   summary: string,
   metadata: Record<string, unknown>
 ) {
   return {
     id: taskId,
+    ...(sessionId ? { sessionId } : {}),
     status: {
       state: "completed",
       timestamp: new Date().toISOString(),
+      // Embed the agent reply inside status.message so the SDK can read it
+      message: {
+        role: "agent",
+        parts: [{ type: "text", text: summary }],
+      },
     },
     artifacts: [
       {
@@ -53,7 +60,7 @@ function buildTask(
         parts: [{ type: "text", text: summary }],
       },
       {
-        name: "structured_metadata",
+        name: "metadata",
         parts: [{ type: "text", text: JSON.stringify(metadata, null, 2) }],
       },
     ],
@@ -170,12 +177,16 @@ export async function POST(req: Request) {
       console.warn(`[LabTrend] Unexpected method: "${method}" — processing anyway`);
     }
 
-    // ── Extract task ID and message from params ───────────────────────────────
+    // ── Extract task ID, session ID, and message from params ─────────────────
     const params = (body.params as Record<string, unknown>) ?? {};
     const taskId =
       (params.id as string) ??
       (findValue(body, "taskId") as string) ??
       crypto.randomUUID();
+    const sessionId =
+      (params.sessionId as string) ??
+      (findValue(body, "sessionId") as string) ??
+      undefined;
 
     // Primary: params.message (A2A spec standard location)
     const message = params.message ?? findValue(body, "message");
@@ -213,10 +224,17 @@ export async function POST(req: Request) {
     } else if (textContent.trim().length > 0) {
       normalizedData = textContent;
     } else {
-      return rpcError(requestId, -32602, "No clinical data found in request", {
-        receivedKeys: Object.keys(body),
-        preview: rawBody.substring(0, 300),
-      });
+      // No data at all (e.g. empty ping) — return a friendly Task so the SDK
+      // doesn't throw "external agent did not respond with a task"
+      return rpcResult(
+        requestId,
+        buildTask(
+          taskId,
+          sessionId,
+          "Hello! I am LabTrend, a clinical AI agent specialised in renal risk prediction. Please share lab results (eGFR, Creatinine, HbA1c) or a clinical question and I will analyse the data for you.",
+          { agent: "LabTrendAgent", intent: "greeting", timestamp: new Date().toISOString() }
+        )
+      );
     }
 
     // ── Run AI analysis ───────────────────────────────────────────────────────
@@ -249,7 +267,7 @@ export async function POST(req: Request) {
     // ── Return spec-compliant Task object ─────────────────────────────────────
     return rpcResult(
       requestId,
-      buildTask(taskId, metadata.clinical_summary, metadata)
+      buildTask(taskId, sessionId, metadata.clinical_summary, metadata)
     );
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : String(error);
