@@ -157,9 +157,17 @@ export async function POST(req: Request) {
     requestId = (body.id as string | number) ?? "1";
     const method = (body.method as string) ?? "";
 
-    // ── Route on JSON-RPC method ──────────────────────────────────────────────
-    if (method && method !== "tasks/send" && method !== "message/send") {
-      return rpcError(requestId, -32601, `Method not found: ${method}`);
+    // ── Accept all A2A messaging method variants ──────────────────────────────
+    // Different SDK versions use different casing/naming:
+    //   "tasks/send"    — A2A spec v0.3+
+    //   "message/send"  — A2A spec alternate
+    //   "SendMessage"   — Prompt Opinion SDK (PascalCase)
+    //   ""              — no method field (raw POST)
+    // We accept all of them; this agent has a single clinical skill.
+    const KNOWN_METHODS = ["tasks/send", "message/send", "sendmessage", "tasks/run", "run"];
+    if (method && !KNOWN_METHODS.includes(method.toLowerCase())) {
+      // Log but don't reject — handle it anyway
+      console.warn(`[LabTrend] Unexpected method: "${method}" — processing anyway`);
     }
 
     // ── Extract task ID and message from params ───────────────────────────────
