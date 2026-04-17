@@ -6,142 +6,238 @@ import { runCoreAnalyzer } from "../analyze/route";
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "*", // Allow all headers for debugging
+  "Access-Control-Allow-Headers": "*",
 };
 
 export async function OPTIONS() {
   return new NextResponse(null, { status: 204, headers: CORS_HEADERS });
 }
 
-// 🌐 DISCOVERY (Production Manifest)
-export async function GET() {
-  return NextResponse.json({
-    "name": "LabTrendAgent",
-    "description": "Clinical lab analysis agent for renal risk prediction.",
-    "version": "1.0.0",
-    "protocol": "A2A",
-    "protocolVersion": "0.3.0",
-    "preferredTransport": "JSONRPC",
-    "input_format": "FHIR",
-    "output_format": "JSON",
-    "defaultInputModes": ["text/plain", "application/json"],
-    "defaultOutputModes": ["text/plain", "application/json"],
-    "supportedInterfaces": [
-      {
-        "url": "https://labtrend.vercel.app/api/a2a",
-        "protocolBinding": "JSONRPC",
-        "protocolVersion": "0.3.0"
-      }
-    ],
-    "capabilities": {
-      "streaming": false,
-      "pushNotifications": false,
-      "stateTransitionHistory": true,
-      "extensions": []
-    },
-    "skills": [
-      {
-        "id": "renal_risk_detection",
-        "name": "Renal Risk Detection",
-        "description": "Detects trends in eGFR and creatinine",
-        "tags": ["renal", "lab-analysis"]
-      }
-    ],
-    "endpoint": "https://labtrend.vercel.app/api/a2a" // Absolute URL
-  }, { headers: CORS_HEADERS });
+// ─── JSON-RPC helpers ────────────────────────────────────────────────────────
+
+function rpcResult(id: string | number, result: unknown) {
+  return NextResponse.json(
+    { jsonrpc: "2.0", id, result },
+    { headers: CORS_HEADERS }
+  );
 }
 
-// 🌐 EXECUTION (Strict Contract)
+function rpcError(
+  id: string | number,
+  code: number,
+  message: string,
+  data?: unknown
+) {
+  return NextResponse.json(
+    { jsonrpc: "2.0", id, error: { code, message, ...(data ? { data } : {}) } },
+    { headers: CORS_HEADERS }
+  );
+}
+
+// ─── A2A Task shape (spec-compliant) ─────────────────────────────────────────
+
+function buildTask(
+  taskId: string,
+  summary: string,
+  metadata: Record<string, unknown>
+) {
+  return {
+    id: taskId,
+    status: {
+      state: "completed",
+      timestamp: new Date().toISOString(),
+    },
+    artifacts: [
+      {
+        name: "clinical_analysis",
+        parts: [{ type: "text", text: summary }],
+      },
+      {
+        name: "structured_metadata",
+        parts: [{ type: "text", text: JSON.stringify(metadata, null, 2) }],
+      },
+    ],
+  };
+}
+
+// ─── Deep key search ──────────────────────────────────────────────────────────
+
+function findValue(obj: unknown, key: string): unknown {
+  if (!obj || typeof obj !== "object") return null;
+  const o = obj as Record<string, unknown>;
+  if (o[key] !== undefined) return o[key];
+  for (const k in o) {
+    const found = findValue(o[k], key);
+    if (found !== null && found !== undefined) return found;
+  }
+  return null;
+}
+
+// ─── Extract plain text from A2A message ─────────────────────────────────────
+
+function extractText(message: unknown): string {
+  if (!message || typeof message !== "object") return "";
+  const msg = message as Record<string, unknown>;
+
+  // Standard A2A: message.parts[].type === "text"
+  if (Array.isArray(msg.parts)) {
+    return msg.parts
+      .map((p: unknown) => {
+        if (typeof p !== "object" || !p) return "";
+        const part = p as Record<string, unknown>;
+        // spec uses `type`, older impls used `kind`
+        if (part.type === "text" || part.kind === "text") {
+          return String(part.text ?? part.content ?? "");
+        }
+        return "";
+      })
+      .filter(Boolean)
+      .join("\n");
+  }
+
+  // Flat string
+  if (typeof msg.text === "string") return msg.text;
+  if (typeof msg.content === "string") return msg.content;
+  return "";
+}
+
+// ─── Discovery (GET) ──────────────────────────────────────────────────────────
+
+export async function GET() {
+  return NextResponse.json(
+    {
+      name: "LabTrendAgent",
+      description:
+        "Clinical lab analysis agent: renal risk prediction via eGFR/Creatinine/HbA1c trends.",
+      url: "https://labtrend.vercel.app/api/a2a", // ← required top-level field
+      version: "1.0.0",
+      defaultInputModes: ["text/plain", "application/json"],
+      defaultOutputModes: ["text/plain", "application/json"],
+      capabilities: {
+        streaming: false,
+        pushNotifications: false,
+        stateTransitionHistory: false,
+      },
+      skills: [
+        {
+          id: "renal_risk_detection",
+          name: "Renal Risk Detection",
+          description:
+            "Detects trends in eGFR and creatinine to predict chronic kidney disease progression.",
+          tags: ["renal", "lab-analysis", "clinical", "FHIR"],
+          examples: [
+            "Analyze eGFR trends for patient with CKD stage 3",
+            "Assess creatinine and HbA1c for diabetic nephropathy risk",
+          ],
+        },
+      ],
+    },
+    { headers: CORS_HEADERS }
+  );
+}
+
+// ─── Execution (POST) ─────────────────────────────────────────────────────────
+
 export async function POST(req: Request) {
-  let requestId = "unknown";
+  let requestId: string | number = "unknown";
   let rawBody = "";
+
   try {
     rawBody = await req.text();
-    if (!rawBody) throw new Error("Empty body");
-    const body = JSON.parse(rawBody);
-    requestId = body.id || "1";
+    if (!rawBody.trim()) return rpcError("unknown", -32700, "Empty body");
 
-    const findValue = (obj: any, key: string): any => {
-      if (!obj || typeof obj !== 'object') return null;
-      if (obj[key] !== undefined) return obj[key];
-      for (const k in obj) {
-        const found = findValue(obj[k], key);
-        if (found) return found;
-      }
-      return null;
-    };
+    const body = JSON.parse(rawBody) as Record<string, unknown>;
+    requestId = (body.id as string | number) ?? "1";
+    const method = (body.method as string) ?? "";
 
-    let textContent = findValue(body, 'message') || findValue(body, 'text') || findValue(body, 'input') || findValue(body, 'content') || "";
-    if (typeof textContent !== 'string' && textContent?.parts) {
-      textContent = textContent.parts.map((p: any) => p.kind === 'text' ? p.text : p.content || "").join('\n');
+    // ── Route on JSON-RPC method ──────────────────────────────────────────────
+    if (method && method !== "tasks/send" && method !== "message/send") {
+      return rpcError(requestId, -32601, `Method not found: ${method}`);
     }
 
-    let fhirData = findValue(body, 'fhir_data') || findValue(body, 'patient_data') || findValue(body, 'fhir_context') || findValue(body, 'data');
-    if (fhirData?.fhir_data) fhirData = fhirData.fhir_data;
+    // ── Extract task ID and message from params ───────────────────────────────
+    const params = (body.params as Record<string, unknown>) ?? {};
+    const taskId =
+      (params.id as string) ??
+      (findValue(body, "taskId") as string) ??
+      crypto.randomUUID();
 
-    const intent = findValue(body, 'intent') || "analyze_renal_risk";
+    // Primary: params.message (A2A spec standard location)
+    const message = params.message ?? findValue(body, "message");
+    let textContent = extractText(message);
 
-    if (!fhirData && typeof textContent === 'string' && textContent.includes("[")) {
+    // Fallback: other common fields
+    if (!textContent) {
+      textContent =
+        (findValue(body, "text") as string) ??
+        (findValue(body, "input") as string) ??
+        (findValue(body, "content") as string) ??
+        "";
+    }
+
+    // ── Extract FHIR data ─────────────────────────────────────────────────────
+    let fhirData =
+      findValue(body, "fhir_data") ??
+      findValue(body, "patient_data") ??
+      findValue(body, "fhir_context") ??
+      findValue(params, "data") ??
+      null;
+
+    // Try to parse JSON embedded in textContent
+    if (!fhirData && textContent.includes("[")) {
       try {
         const jsonMatch = textContent.match(/\[\s*\{[\s\S]*\}\s*\]/);
         if (jsonMatch) fhirData = JSON.parse(jsonMatch[0]);
-      } catch (e) {}
+      } catch (_) {}
     }
 
-    let normalizedData: any = [];
+    // ── Normalize data ────────────────────────────────────────────────────────
+    let normalizedData: unknown;
     if (fhirData) {
       normalizedData = fromFHIR(fhirData);
-    } else if (String(textContent).trim().length > 0) {
-      normalizedData = String(textContent);
+    } else if (textContent.trim().length > 0) {
+      normalizedData = textContent;
     } else {
-      // Return proper JSON-RPC error
-      return NextResponse.json({
-        jsonrpc: "2.0",
-        id: requestId,
-        error: {
-          code: -32602,
-          message: "No clinical data found in request",
-          data: { keys: Object.keys(body), preview: rawBody.substring(0, 200) }
-        }
-      }, { headers: CORS_HEADERS });
+      return rpcError(requestId, -32602, "No clinical data found in request", {
+        receivedKeys: Object.keys(body),
+        preview: rawBody.substring(0, 300),
+      });
     }
 
-    const aiResult = await runCoreAnalyzer({ data: normalizedData, context: String(textContent) });
+    // ── Run AI analysis ───────────────────────────────────────────────────────
+    const aiResult = await runCoreAnalyzer({
+      data: normalizedData,
+      context: textContent,
+    });
 
-    const responseMetadata = {
+    const metadata = {
       agent: "LabTrendAgent",
-      intent: String(intent),
-      risk_level: aiResult?.risk_level || "MODERATE",
-      confidence: Number(aiResult?.confidence || 0.5),
-      clinical_summary: String(aiResult?.clinical_summary || "Assessment complete."),
-      key_factors: Array.isArray(aiResult?.key_factors) ? aiResult.key_factors : [],
-      recommended_actions: Array.isArray(aiResult?.recommended_actions) ? aiResult.recommended_actions : [],
+      intent: "analyze_renal_risk",
+      risk_level: aiResult?.risk_level ?? "MODERATE",
+      confidence: Number(aiResult?.confidence ?? 0.5),
+      clinical_summary: String(
+        aiResult?.clinical_summary ?? "Assessment complete."
+      ),
+      key_factors: Array.isArray(aiResult?.key_factors)
+        ? aiResult.key_factors
+        : [],
+      recommended_actions: Array.isArray(aiResult?.recommended_actions)
+        ? aiResult.recommended_actions
+        : [],
       timestamp: new Date().toISOString(),
-      trace: aiResult?.trace || { steps: ["normalize", "analyze"], data_points: normalizedData.length }
+      trace: aiResult?.trace ?? {
+        steps: ["normalize", "analyze"],
+        data_points: Array.isArray(normalizedData) ? normalizedData.length : 1,
+      },
     };
 
-    // ALWAYS return JSON-RPC 2.0 to satisfy the A2A SDK
-    return NextResponse.json({
-      jsonrpc: "2.0",
-      id: requestId,
-      result: {
-        kind: "message",
-        messageId: crypto.randomUUID(),
-        role: "agent",
-        parts: [{ kind: "text", text: responseMetadata.clinical_summary }],
-        metadata: responseMetadata
-      }
-    }, { headers: CORS_HEADERS });
-
-  } catch (error: any) {
-    return NextResponse.json({
-      jsonrpc: "2.0",
-      id: requestId,
-      error: {
-        code: -32603,
-        message: "Internal Server Error",
-        data: error.message
-      }
-    }, { headers: CORS_HEADERS });
+    // ── Return spec-compliant Task object ─────────────────────────────────────
+    return rpcResult(
+      requestId,
+      buildTask(taskId, metadata.clinical_summary, metadata)
+    );
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : String(error);
+    return rpcError(requestId, -32603, "Internal Server Error", msg);
   }
 }
