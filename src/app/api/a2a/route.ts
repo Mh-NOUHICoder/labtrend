@@ -119,6 +119,8 @@ export async function GET() {
       "version": "1.0.0",
       "protocol": "A2A",
       "protocolVersion": "0.3.0",
+      // Required by Prompt Opinion SDK to select the correct transport
+      "preferredTransport": "JSONRPC",
       "supportedInterfaces": [
         {
           "url": "https://labtrend.vercel.app/api/a2a",
@@ -219,6 +221,27 @@ export async function POST(req: Request) {
 
     // ── Normalize data ────────────────────────────────────────────────────────
     let normalizedData: unknown;
+
+    // Detect bare patient ID: a string containing only digits (e.g. "15577").
+    // PO passes the selected patient's ID when no explicit lab query is typed.
+    // We cannot look up FHIR data without credentials, so we ask for lab values.
+    const isBarePatiendId = textContent.trim().length > 0 &&
+      /^\d+$/.test(textContent.trim()) &&
+      !fhirData;
+
+    if (isBarePatiendId) {
+      const patientId = textContent.trim();
+      return rpcResult(
+        requestId,
+        buildTask(
+          taskId,
+          sessionId,
+          `Hello! I am LabTrend, a clinical AI agent specialised in renal risk prediction. I can see patient ID ${patientId} is selected. To perform a full renal risk assessment, please provide the patient's recent lab results — eGFR, Creatinine and/or HbA1c values with dates. You can paste them as text or send structured FHIR observations.`,
+          { agent: "LabTrendAgent", intent: "request_lab_data", patient_id: patientId, timestamp: new Date().toISOString() }
+        )
+      );
+    }
+
     if (fhirData) {
       normalizedData = fromFHIR(fhirData);
     } else if (textContent.trim().length > 0) {
