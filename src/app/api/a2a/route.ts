@@ -53,16 +53,17 @@ export async function GET() {
 
 // 🌐 EXECUTION (Strict Contract)
 export async function POST(req: Request) {
+  let requestId = "unknown";
+  let rawBody = "";
   try {
-    const rawBody = await req.text();
-    if (!rawBody) throw new Error("Empty request body");
-    
+    rawBody = await req.text();
+    if (!rawBody) throw new Error("Empty body");
     const body = JSON.parse(rawBody);
+    requestId = body.id || "1";
 
-    // 1. IMPROVED: Deep Keyword Extraction
     const findValue = (obj: any, key: string): any => {
       if (!obj || typeof obj !== 'object') return null;
-      if (obj[key]) return obj[key];
+      if (obj[key] !== undefined) return obj[key];
       for (const k in obj) {
         const found = findValue(obj[k], key);
         if (found) return found;
@@ -93,21 +94,21 @@ export async function POST(req: Request) {
     } else if (String(textContent).trim().length > 0) {
       normalizedData = String(textContent);
     } else {
-      // Returning 200 with error details to bypass PO's generic 400 error handling
+      // Return proper JSON-RPC error
       return NextResponse.json({
-        agent: "LabTrendAgent",
-        status: "error",
-        error: "INVALID_INPUT",
-        details: `No data found. Keys received: [${Object.keys(body).join(', ')}]`
-      }, { status: 200, headers: CORS_HEADERS });
+        jsonrpc: "2.0",
+        id: requestId,
+        error: {
+          code: -32602,
+          message: "No clinical data found in request",
+          data: { keys: Object.keys(body), preview: rawBody.substring(0, 200) }
+        }
+      }, { headers: CORS_HEADERS });
     }
 
-    const aiResult = await runCoreAnalyzer({ 
-      data: normalizedData, 
-      context: String(textContent)
-    });
+    const aiResult = await runCoreAnalyzer({ data: normalizedData, context: String(textContent) });
 
-    const response = {
+    const responseMetadata = {
       agent: "LabTrendAgent",
       intent: String(intent),
       risk_level: aiResult?.risk_level || "MODERATE",
@@ -119,28 +120,28 @@ export async function POST(req: Request) {
       trace: aiResult?.trace || { steps: ["normalize", "analyze"], data_points: normalizedData.length }
     };
 
-    if (body.jsonrpc === "2.0") {
-      return NextResponse.json({
-        jsonrpc: "2.0",
-        id: body.id,
-        result: {
-          kind: "message",
-          messageId: crypto.randomUUID(),
-          role: "agent",
-          parts: [{ kind: "text", text: response.clinical_summary }],
-          metadata: response
-        }
-      }, { headers: CORS_HEADERS });
-    }
-
-    return NextResponse.json(response, { headers: CORS_HEADERS });
+    // ALWAYS return JSON-RPC 2.0 to satisfy the A2A SDK
+    return NextResponse.json({
+      jsonrpc: "2.0",
+      id: requestId,
+      result: {
+        kind: "message",
+        messageId: crypto.randomUUID(),
+        role: "agent",
+        parts: [{ kind: "text", text: responseMetadata.clinical_summary }],
+        metadata: responseMetadata
+      }
+    }, { headers: CORS_HEADERS });
 
   } catch (error: any) {
     return NextResponse.json({
-      agent: "LabTrendAgent",
-      status: "error",
-      error: "INTERNAL_EXCEPTION",
-      details: error.message
-    }, { status: 200, headers: CORS_HEADERS });
+      jsonrpc: "2.0",
+      id: requestId,
+      error: {
+        code: -32603,
+        message: "Internal Server Error",
+        data: error.message
+      }
+    }, { headers: CORS_HEADERS });
   }
 }
