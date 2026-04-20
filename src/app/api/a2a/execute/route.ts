@@ -12,78 +12,134 @@ const CORS_HEADERS = {
 
 export async function OPTIONS() {
   return new NextResponse(null, {
-    status: 200,
+    status: 204,
     headers: CORS_HEADERS,
   });
 }
 
-// 🌐 EXECUTION ENDPOINT (Mirroring logic from /api/a2a)
-export async function POST(req: Request) {
-  try {
-    const body = await req.json();
+// ─── Execution endpoint (/api/a2a/execute) ────────────────────────────────────
+// Every code-path MUST go through buildA2AResponse — no raw JSON, no aiResult
+// returned unwrapped.
 
-    // 1. JSON-RPC 2.0 (Prompt Opinion / A2A Protocol)
+export async function POST(req: Request) {
+  let requestId: string | number = "unknown";
+
+  try {
+    const rawBody = await req.text();
+    if (!rawBody.trim()) {
+      return NextResponse.json(
+        buildA2AErrorResponse("unknown", -32700, "Empty request body"),
+        { status: 400, headers: CORS_HEADERS }
+      );
+    }
+
+    const body = JSON.parse(rawBody) as Record<string, unknown>;
+
+    // ── Branch A: JSON-RPC 2.0 envelope ──────────────────────────────────────
     if (body.jsonrpc === "2.0") {
-      const { method, params, id } = body;
-      
-      // We accept various methods but handle them consistently
-      const KNOWN_METHODS = ["tasks/send", "message/send", "sendmessage", "tasks/run", "run"];
-      const requestedMethod = (method as string)?.toLowerCase() || "";
-      
+      const { method, params, id } = body as {
+        method?: string;
+        params?: Record<string, unknown>;
+        id?: string | number;
+      };
+      requestId = id ?? "1";
+
+      const KNOWN_METHODS = [
+        "tasks/send",
+        "message/send",
+        "sendmessage",
+        "tasks/run",
+        "run",
+      ];
+      const requestedMethod = (method ?? "").toLowerCase();
+
       if (requestedMethod && !KNOWN_METHODS.includes(requestedMethod)) {
         return NextResponse.json(
-          buildA2AErrorResponse(id, -32601, `Method not found: ${method}`),
-          { headers: CORS_HEADERS }
+          buildA2AErrorResponse(requestId, -32601, `Method not found: ${method}`),
+          { status: 404, headers: CORS_HEADERS }
         );
       }
 
-      const metadata = params?.message?.metadata || params?.metadata || {};
-      const fhirData = params?.message?.fhir_data || params?.fhir_data || body.fhir_data || null;
-      
-      let labData: any[] = [];
+      const taskId = crypto.randomUUID();
+      const sessionId = (params?.sessionId as string) ?? undefined;
+      const fhirData =
+        (params as any)?.message?.fhir_data ??
+        (params as any)?.fhir_data ??
+        (body as any).fhir_data ??
+        null;
+
+      let labData: unknown[] = [];
       if (fhirData) {
         labData = fromFHIR(fhirData);
       }
 
-      const aiResult = await runCoreAnalyzer(labData);
+      const aiResult = await runCoreAnalyzer({ data: labData, context: "" });
+
+      const summary = String(aiResult?.clinical_summary ?? "Assessment complete.");
+      const metadata: Record<string, unknown> = {
+        agent: "LabTrendAgent",
+        intent: "analyze_renal_risk",
+        risk_level: aiResult?.risk_level ?? "MODERATE",
+        confidence: Number(aiResult?.confidence ?? 0.5),
+        clinical_summary: summary,
+        key_factors: Array.isArray(aiResult?.key_factors) ? aiResult.key_factors : [],
+        recommended_actions: Array.isArray(aiResult?.recommended_actions)
+          ? aiResult.recommended_actions
+          : [],
+        timestamp: new Date().toISOString(),
+      };
 
       return NextResponse.json(
-        buildA2AResponse(
-          id,
-          crypto.randomUUID(),
-          "COMPLETED",
-          aiResult?.clinical_summary || "Assessment complete.",
-          { ...metadata, analysis_result: aiResult }
-        ), 
+        buildA2AResponse(requestId, taskId, "COMPLETED", summary, metadata, sessionId),
         { headers: CORS_HEADERS }
       );
     }
 
-    // 2. FLAT JSON (Standard/Legacy)
-    const { fhir_data, patient_data, lab_data } = body;
-    let labDataToAnalyze: any[] = [];
+    // ── Branch B: flat / legacy JSON ─────────────────────────────────────────
+    // PREVIOUSLY: returned raw aiResult — FIXED: always wraps in A2AResponse
+    const { fhir_data, patient_data, lab_data } = body as any;
+    let labDataToAnalyze: unknown[] = [];
 
     if (fhir_data) {
       labDataToAnalyze = fromFHIR(fhir_data);
     } else if (patient_data) {
       labDataToAnalyze = fromFHIR(patient_data);
-    } else if (lab_data) {
+    } else if (Array.isArray(lab_data)) {
       labDataToAnalyze = lab_data;
     }
 
-    const aiResult = await runCoreAnalyzer(labDataToAnalyze);
+    const aiResult = await runCoreAnalyzer({ data: labDataToAnalyze, context: "" });
 
-    return NextResponse.json(aiResult || {
+    const summary = String(aiResult?.clinical_summary ?? "Assessment complete.");
+    const metadata: Record<string, unknown> = {
       agent: "LabTrendAgent",
-      risk_level: "MODERATE",
-      clinical_summary: "Execution Fallback triggered."
-    }, { headers: CORS_HEADERS });
+      intent: "analyze_renal_risk",
+      risk_level: aiResult?.risk_level ?? "MODERATE",
+      confidence: Number(aiResult?.confidence ?? 0.5),
+      clinical_summary: summary,
+      key_factors: Array.isArray(aiResult?.key_factors) ? aiResult.key_factors : [],
+      recommended_actions: Array.isArray(aiResult?.recommended_actions)
+        ? aiResult.recommended_actions
+        : [],
+      timestamp: new Date().toISOString(),
+    };
 
-  } catch (error: any) {
-    console.error(`[A2A Execute Error]`, error);
-    return NextResponse.json({
-      error: "Internal Server Error",
-      details: error.message
-    }, { status: 500, headers: CORS_HEADERS });
+    return NextResponse.json(
+      buildA2AResponse(
+        requestId,
+        crypto.randomUUID(),
+        "COMPLETED",
+        summary,
+        metadata
+      ),
+      { headers: CORS_HEADERS }
+    );
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : String(error);
+    console.error("[A2A Execute] Error:", msg);
+    return NextResponse.json(
+      buildA2AErrorResponse(requestId, -32603, "Internal Server Error", msg),
+      { status: 500, headers: CORS_HEADERS }
+    );
   }
 }
