@@ -1,17 +1,39 @@
 // ─── Strict A2A Schema Utilities for Prompt Opinion Orchestrator ──────────────
 //
-// CRITICAL: The remote parser deserializes task.status into A2A.TaskStatus.
-// It ONLY accepts { "state": "PENDING"|"RUNNING"|"COMPLETED"|"FAILED" }.
-// Any extra keys (timestamp, message, etc.) inside `status` WILL cause:
-//   "The JSON value could not be converted to A2A.TaskState"
+// SPEC: google/A2A protocol — TaskState is a LOWERCASE string enum:
+//   "submitted" | "working" | "input-required" | "completed" | "failed" | "unknown"
 //
-// Rule: keep status as { state } — nothing else inside it.
+// C# deserializer (System.Text.Json) is CASE-SENSITIVE.
+// Sending "COMPLETED" → throws "could not be converted to A2A.TaskState"
+// Sending "completed" → ✅ works
+//
+// Internal aliases (PENDING → submitted, RUNNING → working) are mapped below.
 
 import crypto from "crypto";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export type A2ATaskState = "PENDING" | "RUNNING" | "COMPLETED" | "FAILED";
+/**
+ * Canonical A2A TaskState values (all lowercase — matches the A2A protobuf spec).
+ * These are the ONLY values the Prompt Opinion orchestrator will accept.
+ */
+export type A2ATaskState =
+  | "submitted"
+  | "working"
+  | "input-required"
+  | "completed"
+  | "failed"
+  | "unknown";
+
+/** Legacy aliases kept for backward-compat with our internal callers. */
+export type A2ATaskStateAlias =
+  | A2ATaskState
+  | "PENDING"
+  | "RUNNING"
+  | "COMPLETED"
+  | "FAILED"
+  | "pending"
+  | "running";
 
 export interface A2AStatus {
   state: A2ATaskState;
@@ -20,7 +42,7 @@ export interface A2AStatus {
 export interface A2ATask {
   id: string;
   sessionId?: string;
-  status: A2AStatus;           // ← ONLY state; no timestamp, no message
+  status: A2AStatus; // ← ONLY "state" inside — any extra key breaks remote parser
   artifacts?: A2AArtifact[];
 }
 
@@ -47,25 +69,39 @@ export interface A2AErrorResponse {
   };
 }
 
-// ─── State validator ──────────────────────────────────────────────────────────
-
-const VALID_STATES: ReadonlySet<A2ATaskState> = new Set([
-  "PENDING",
-  "RUNNING",
-  "COMPLETED",
-  "FAILED",
-]);
+// ─── State validator + normalizer ─────────────────────────────────────────────
 
 /**
- * Normalizes and strictly validates an A2A task state.
- * Rejects any value not in the enum — never passes through
- * loose values like "done", "success", "ok", etc.
+ * Converts ANY state string to a valid, lowercase A2A TaskState.
+ *
+ * Mappings:
+ *   "PENDING"   / "pending"   → "submitted"
+ *   "RUNNING"   / "running"   → "working"
+ *   "COMPLETED" / "completed" → "completed"
+ *   "FAILED"    / "failed"    → "failed"
+ *   anything else             → "unknown"
  */
 export function validateA2AState(state: string): A2ATaskState {
-  const upper = (state ?? "").toString().toUpperCase() as A2ATaskState;
-  if (VALID_STATES.has(upper)) return upper;
-  console.warn(`[A2A] ⚠ Invalid state "${state}" — defaulting to FAILED`);
-  return "FAILED";
+  const normalized = (state ?? "").trim().toLowerCase();
+
+  const MAP: Record<string, A2ATaskState> = {
+    // Standard spec values (pass through)
+    submitted: "submitted",
+    working: "working",
+    "input-required": "input-required",
+    completed: "completed",
+    failed: "failed",
+    unknown: "unknown",
+    // Legacy uppercase aliases
+    pending: "submitted",
+    running: "working",
+  };
+
+  const mapped = MAP[normalized];
+  if (mapped) return mapped;
+
+  console.warn(`[A2A] ⚠ Invalid state "${state}" — defaulting to "unknown"`);
+  return "unknown";
 }
 
 // ─── Response builder ─────────────────────────────────────────────────────────
@@ -73,30 +109,23 @@ export function validateA2AState(state: string): A2ATaskState {
 /**
  * Builds a strictly-compliant A2A / JSON-RPC 2.0 response.
  *
- * Output shape (exactly what Prompt Opinion expects):
+ * Guaranteed output shape:
  * {
  *   "jsonrpc": "2.0",
  *   "id": <requestId>,
  *   "result": {
  *     "task": {
- *       "id": "<taskId>",
- *       "status": { "state": "COMPLETED" },   ← ONLY state — nothing else
+ *       "id": "<uuid>",
+ *       "status": { "state": "completed" },   ← lowercase, nothing else
  *       "artifacts": [ ... ]
  *     }
  *   }
  * }
- *
- * @param requestId  - JSON-RPC request id (pass through from the caller)
- * @param taskId     - stable task identifier (use crypto.randomUUID() if none)
- * @param state      - one of PENDING | RUNNING | COMPLETED | FAILED
- * @param summary    - human-readable clinical summary (goes into artifact text)
- * @param metadata   - structured payload (goes into a separate artifact)
- * @param sessionId  - optional A2A session id
  */
 export function buildA2AResponse(
   requestId: string | number,
   taskId: string,
-  state: A2ATaskState | string,
+  state: A2ATaskStateAlias | string,
   summary: string,
   metadata: Record<string, unknown> = {},
   sessionId?: string
@@ -106,7 +135,7 @@ export function buildA2AResponse(
   const task: A2ATask = {
     id: taskId,
     ...(sessionId ? { sessionId } : {}),
-    // ↓ STRICT: only "state" — the remote parser cannot handle extra fields
+    // CRITICAL: status contains ONLY "state" — no timestamp, no message, no extras
     status: {
       state: normalizedState,
     },
@@ -128,17 +157,14 @@ export function buildA2AResponse(
     result: { task },
   };
 
-  // DEBUG: log every outbound response for traceability
-  console.log("[A2A] ✅ Outbound response:\n" + JSON.stringify(response, null, 2));
+  // Debug: log every outbound A2A response
+  console.log("[A2A] ✅ Outbound:\n" + JSON.stringify(response, null, 2));
 
   return response;
 }
 
-// ─── Error response builder ───────────────────────────────────────────────────
+// ─── Error builder ────────────────────────────────────────────────────────────
 
-/**
- * Builds a strictly-compliant JSON-RPC 2.0 error response.
- */
 export function buildA2AErrorResponse(
   requestId: string | number,
   code: number,
@@ -155,20 +181,16 @@ export function buildA2AErrorResponse(
     },
   };
 
-  console.log("[A2A] ❌ Error response:\n" + JSON.stringify(response, null, 2));
+  console.log("[A2A] ❌ Error:\n" + JSON.stringify(response, null, 2));
 
   return response;
 }
 
-// ─── Convenience alias (matches the simpler signature used in the spec) ────────
+// ─── Simple alias ─────────────────────────────────────────────────────────────
 
-/**
- * Minimal builder — generates a fresh task ID automatically.
- * Useful for callers that don't need to track a specific taskId.
- */
 export function buildSimpleA2AResponse(
   output: Record<string, unknown>,
-  state: A2ATaskState = "COMPLETED"
+  state: A2ATaskStateAlias = "completed"
 ): A2AResponse {
   return buildA2AResponse(
     crypto.randomUUID(),
