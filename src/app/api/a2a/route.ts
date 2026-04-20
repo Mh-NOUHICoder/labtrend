@@ -30,7 +30,10 @@ function findValue(obj: unknown, key: string): unknown {
 // ─── Extract plain text from A2A message ─────────────────────────────────────
 
 function extractText(message: unknown): string {
-  if (!message || typeof message !== "object") return "";
+  if (!message) return "";
+  if (typeof message === "string") return message;
+  
+  if (typeof message !== "object") return "";
   const msg = message as Record<string, unknown>;
 
   // Standard A2A: message.parts[].type === "text"
